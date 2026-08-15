@@ -1,0 +1,32 @@
+{
+  "name": "gws-security-checklist",
+  "version": "1.0.0",
+  "description": "Google Workspace Security Checklist — standalone hardening baseline",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:frontend:msw": "cd frontend && npm run dev:msw",
+    "build": "npm run build:frontend && npm run build:backend",
+    "build:frontend": "cd frontend && npm run build",
+    "build:backend": "cd backend && npm run build",
+    "test": "cd backend && npm test",
+    "lint": "cd backend && npm run lint",
+    "type-check": "cd backend && npm run type-check",
+    "type-check:frontend": "cd frontend && npm run type-check",
+    "type-check:all": "npm run type-check && npm run type-check:frontend",
+    "check:scopes": "tsx scripts/check-scopes.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "concurrently": "^9.2.1",
+    "dotenv": "^16.4.5",
+    "dotenv-cli": "^7.4.2",
+    "tsx": "^4.23.0"
+  }
+}

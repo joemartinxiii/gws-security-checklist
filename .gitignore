@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Testing
+coverage/
+test-results/
+playwright-report/
+playwright/.cache/
+tests/e2e/.auth/
+tests/e2e/.fixtures/
+
+# Production
+build/
+dist/
+*.log
+
+# Vite
+frontend/.vite/
+
+# Runtime data
+backend/data/
+
+# Environment variables
+.env
+.env.test
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Service account keys (never commit these)
+sa-key.json
+github-deploy-key.json
+test-*.json
+*-key.json
+service-account*.json
+
+# Session handoff (private — never commit or push)
+/todos.md
+/tech-debt.md
+/docs/session/
