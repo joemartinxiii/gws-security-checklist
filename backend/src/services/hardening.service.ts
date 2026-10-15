@@ -189,6 +189,156 @@ export function summarize2svCoverage(
   };
 }
 
+export interface TwoSvEnforcement {
+  status: 'pass' | 'warning' | 'fail';
+  currentValue: string;
+  issues: string[];
+}
+
+type EnforcementState = { state: 'on' | 'scheduled' | 'off'; from?: Date };
+
+/** `enforced_from` unset means 2-Step Verification is not enforced. */
+function enforcementState(value: Record<string, unknown> | null, now: Date): EnforcementState {
+  const raw = readString(value, 'enforcedFrom');
+  const from = raw ? new Date(raw) : undefined;
+  if (!from || Number.isNaN(from.getTime())) return { state: 'off' };
+  return { state: from.getTime() <= now.getTime() ? 'on' : 'scheduled', from };
+}
+
+function isoDay(date: Date | undefined): string {
+  return date ? date.toISOString().slice(0, 10) : 'an unknown date';
+}
+
+function scopeCountLabel(count: number): string {
+  return `${count} org unit${count === 1 ? '' : 's'} or group${count === 1 ? '' : 's'}`;
+}
+
+/**
+ * Score 2-Step Verification enforcement from the root org unit's policy.
+ * Org units and groups with their own enforcement date refine the result.
+ */
+export function evaluate2svEnforcement(snapshot: PolicySnapshot, now: Date = new Date()): TwoSvEnforcement {
+  const type = 'security.two_step_verification_enforcement';
+  const root = enforcementState(snapshot.get(type).value, now);
+  const others = snapshot.overrides(type).map((scope) => enforcementState(scope.value, now));
+  const notEnforced = others.filter((other) => other.state !== 'on').length;
+  const active = others.filter((other) => other.state !== 'off').length;
+
+  if (root.state === 'on') {
+    if (notEnforced > 0) {
+      return {
+        status: 'warning',
+        currentValue: `Enforced at the top level since ${isoDay(root.from)}, but not for ${scopeCountLabel(notEnforced)}`,
+        issues: [
+          `${scopeCountLabel(notEnforced)} turn enforcement off or start it later than the top-level org unit.`,
+        ],
+      };
+    }
+    return {
+      status: 'pass',
+      currentValue: `Enforced for all users since ${isoDay(root.from)}`,
+      issues: [],
+    };
+  }
+  if (root.state === 'scheduled') {
+    return {
+      status: 'warning',
+      currentValue: `Enforcement starts ${isoDay(root.from)}`,
+      issues: ['Enforcement is scheduled for the future. Users are not required to use 2-Step Verification until then.'],
+    };
+  }
+  if (active > 0) {
+    return {
+      status: 'warning',
+      currentValue: `Enforced for ${scopeCountLabel(active)} only`,
+      issues: ['The top-level org unit does not enforce 2-Step Verification, so users outside those scopes are not required to use it.'],
+    };
+  }
+  return {
+    status: 'fail',
+    currentValue: 'Not enforced',
+    issues: ['No enforcement date is set for the top-level org unit.'],
+  };
+}
+
+const FACTOR_SET_LABELS: Record<string, string> = {
+  ALL: 'Any method',
+  PASSKEY_ONLY: 'Security keys or passkeys only',
+  PASSKEY_PLUS_SECURITY_CODE: 'Passkeys plus security codes',
+  PASSKEY_PLUS_IP_BOUND_SECURITY_CODE: 'Passkeys plus IP-bound security codes',
+  NO_TELEPHONY: 'Any method except phone',
+};
+
+/** Factor sets that limit sign-in to security keys or passkeys (with optional codes). */
+const PHISHING_RESISTANT_FACTOR_SETS = new Set([
+  'PASSKEY_ONLY',
+  'PASSKEY_PLUS_SECURITY_CODE',
+  'PASSKEY_PLUS_IP_BOUND_SECURITY_CODE',
+]);
+
+function factorSetLabel(set: string): string {
+  return FACTOR_SET_LABELS[set] ?? set;
+}
+
+export function evaluatePasswordPolicy(value: Record<string, unknown>): EvalResult {
+  const strength = readString(value, 'allowedStrength');
+  const enforced = readBool(value, 'enforceRequirementsAtLogin') === true;
+  const minRaw = readField(value, 'minimumLength');
+  const min = typeof minRaw === 'number' ? minRaw : undefined;
+  const isStrong = strength === 'STRONG';
+  const longEnough = min !== undefined && min >= 12;
+
+  const issues: string[] = [];
+  if (isStrong && !longEnough) {
+    issues.push(
+      min === undefined
+        ? 'The minimum password length is not set. Google’s default is 8 characters.'
+        : `The minimum password length is ${min}. Use at least 12.`
+    );
+  }
+  if (isStrong && !enforced) {
+    issues.push('Strength and length are not enforced at sign-in, so existing weak passwords keep working.');
+  }
+
+  return {
+    status: !isStrong ? 'fail' : longEnough && enforced ? 'pass' : 'warning',
+    currentValue: [
+      `Strength: ${strength ?? 'unknown'}`,
+      min !== undefined ? `min length: ${min}` : null,
+      `enforced at login: ${enforced ? 'yes' : 'no'}`,
+    ]
+      .filter(Boolean)
+      .join(', '),
+    issues: issues.length ? issues : undefined,
+  };
+}
+
+const SEVERITY_WEIGHT: Record<Severity, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+const STATUS_CREDIT: Partial<Record<HardeningCheck['status'], number>> = {
+  pass: 1,
+  warning: 0.5,
+  fail: 0,
+};
+
+/**
+ * Severity-weighted pass rate over graded checks (pass, warning, fail), 0-100.
+ * Null when nothing was graded.
+ */
+export function computeHardeningScore(
+  checks: Array<Pick<HardeningCheck, 'status' | 'severity'>>
+): number | null {
+  let weight = 0;
+  let earned = 0;
+  for (const check of checks) {
+    const credit = STATUS_CREDIT[check.status];
+    if (credit === undefined) continue;
+    const w = SEVERITY_WEIGHT[check.severity] ?? 1;
+    weight += w;
+    earned += w * credit;
+  }
+  return weight === 0 ? null : Math.round((earned / weight) * 100);
+}
+
 /** Map raw errors to stable operator/client copy — never surface Google JSON. */
 export function humanizeApiFailure(error: unknown, context: string): string {
   const msg = error instanceof Error ? error.message : String(error ?? '');
@@ -216,7 +366,10 @@ export function humanizeApiFailure(error: unknown, context: string): string {
 
 export function policyApiMetaFromSnapshot(snapshot: PolicySnapshot): PolicyApiMeta {
   if (snapshot.available) {
-    return { available: true };
+    const meta: PolicyApiMeta = { available: true };
+    if (snapshot.warnings.length > 0) meta.warnings = [...snapshot.warnings];
+    if (snapshot.partial) meta.partial = true;
+    return meta;
   }
   const raw = snapshot.error || '';
   let code = 'unavailable';
@@ -240,6 +393,25 @@ export function policyApiMetaFromSnapshot(snapshot: PolicySnapshot): PolicyApiMe
 export function isTransientPolicyFailure(meta: PolicyApiMeta): boolean {
   if (meta.available) return false;
   return meta.code === 'http_429' || meta.code === 'http_503';
+}
+
+/** Google's published defaults for `drive_and_docs.external_sharing`. */
+const EXTERNAL_SHARING_DEFAULTS: Record<string, unknown> = {
+  externalSharingMode: 'ALLOWED',
+  allowReceivingExternalFiles: true,
+  warnForExternalSharing: true,
+  allowNonGoogleInvites: true,
+  allowPublishingFiles: true,
+  accessCheckerSuggestions: 'RECIPIENTS_OR_AUDIENCE_OR_PUBLIC',
+  allowedPartiesForDistributingContent: 'ALL_ELIGIBLE_USERS',
+};
+
+function sharingFlag(value: Record<string, unknown>, field: string): boolean {
+  return readBool(value, field) ?? (EXTERNAL_SHARING_DEFAULTS[field] as boolean);
+}
+
+function externalSharingOff(value: Record<string, unknown>): boolean {
+  return (readString(value, 'externalSharingMode') ?? 'ALLOWED') === 'DISALLOWED';
 }
 
 export class HardeningService extends WorkspaceService {
@@ -300,7 +472,12 @@ export class HardeningService extends WorkspaceService {
     const lookup = snapshot.get(settingType);
     if (!lookup.found && !options.evaluateOnMissing) {
       if (options.defaultValue) {
-        const assumed: PolicyLookup = { found: true, value: options.defaultValue, scopeCount: 0 };
+        const assumed: PolicyLookup = {
+          found: true,
+          value: options.defaultValue,
+          overrideCount: 0,
+          licenseConditional: false,
+        };
         const result = evaluate(options.defaultValue, assumed);
         const issues = result.issues ? [...result.issues] : [];
         issues.push('No admin policy is saved. This value is Google’s published default.');
@@ -325,12 +502,7 @@ export class HardeningService extends WorkspaceService {
 
     const result = evaluate(lookup.value ?? {}, lookup);
     const issues = result.issues ? [...result.issues] : [];
-    if (lookup.scopeCount > 1) {
-      const others = lookup.scopeCount - 1;
-      issues.push(
-        `Showing the top-level org unit. ${others} other org unit${others === 1 ? ' differs' : 's differ'}.`
-      );
-    }
+    issues.push(...this.lookupNotes([lookup]));
 
     return {
       ...base,
@@ -341,13 +513,249 @@ export class HardeningService extends WorkspaceService {
     };
   }
 
+  private lookupNotes(lookups: PolicyLookup[]): string[] {
+    const notes: string[] = [];
+    const overrides = lookups.reduce((sum, lookup) => sum + lookup.overrideCount, 0);
+    if (overrides > 0) {
+      notes.push(
+        `Showing the top-level org unit. ${overrides} other ${
+          overrides === 1 ? 'org unit or group overrides' : 'org units or groups override'
+        } this setting.`
+      );
+    }
+    if (lookups.some((lookup) => lookup.licenseConditional)) {
+      notes.push(
+        'The value shown applies only to users with a specific license. Users without that license may have a different value.'
+      );
+    }
+    return notes;
+  }
+
+  /**
+   * A check that depends on several settings at once (for example POP and
+   * IMAP). `defaults` supplies Google's published value for a setting with no
+   * saved policy; a setting with neither is passed to `evaluate` as null.
+   */
+  private policyCheckAll(
+    snapshot: PolicySnapshot,
+    meta: CheckMeta,
+    settingTypes: string[],
+    evaluate: (values: Array<Record<string, unknown> | null>) => EvalResult,
+    defaults: Record<string, Record<string, unknown>> = {}
+  ): HardeningCheck {
+    const base = this.baseFrom(meta);
+    if (!snapshot.available) {
+      return {
+        ...base,
+        status: 'manual',
+        source: 'manual',
+        currentValue: 'Manual review',
+        issues: [
+          'Automated read unavailable. Verify this setting in the Admin console until Policy API access is restored.',
+        ],
+      };
+    }
+
+    const lookups = settingTypes.map((type) => snapshot.get(type));
+    const values = lookups.map((lookup, i) =>
+      lookup.found ? lookup.value : (defaults[settingTypes[i]] ?? null)
+    );
+    if (values.every((value) => value === null)) {
+      return {
+        ...base,
+        status: 'manual',
+        source: 'manual',
+        currentValue: 'Not explicitly configured',
+        issues: [
+          'No org policy returned. A Google default likely applies. Confirm the intended setting in the Admin console.',
+        ],
+      };
+    }
+
+    const result = evaluate(values);
+    const issues = [...(result.issues ?? []), ...this.lookupNotes(lookups)];
+    return {
+      ...base,
+      status: result.status,
+      source: 'auto',
+      currentValue: result.currentValue,
+      issues: issues.length ? issues : undefined,
+    };
+  }
+
+  // --- Administrator accounts -----------------------------------------------
+
+  /** Page through Directory users.list for one query. Never loops on an empty page. */
+  private async listDirectoryUsers(
+    admin: any,
+    query: string,
+    fields: string,
+    maxPages = 20
+  ): Promise<Array<Record<string, any>>> {
+    const users: Array<Record<string, any>> = [];
+    let pageToken: string | undefined;
+    let pages = 0;
+    do {
+      const response = await this.withRetry(() =>
+        admin.users.list({
+          customer: 'my_customer',
+          maxResults: 500,
+          query,
+          pageToken,
+          fields: `${fields},nextPageToken`,
+        })
+      );
+      const page: Array<Record<string, any>> = response.data.users || [];
+      users.push(...page);
+      pageToken = response.data.nextPageToken || undefined;
+      pages += 1;
+      if (pageToken && (page.length === 0 || pages >= maxPages)) break;
+    } while (pageToken);
+    return users.filter((user) => user.suspended !== true);
+  }
+
+  async checkSuperAdminCount(userEmail: string): Promise<HardeningCheck> {
+    const meta: CheckMeta = {
+      id: 'super-admin-count',
+      category: 'Administrator Accounts',
+      name: 'Super Admin Count',
+      description: 'Number of active super admin accounts',
+      severity: 'critical',
+      recommendedValue: '2 to 4 super admins',
+      rationale:
+        'Super admins can read all data and change every setting. A single super admin leaves no backup if that person is locked out or leaves. Too many super admins gives attackers more high-value accounts to phish.',
+      recommendation:
+        'Keep two to four super admins. Use named accounts, not shared ones. Give day-to-day admins a delegated admin role with only the privileges they need.',
+      adminConsoleUrl: 'https://admin.google.com/ac/roles',
+    };
+    try {
+      const admin = await this.adminFor(userEmail);
+      const admins = await this.listDirectoryUsers(admin, 'isAdmin=true', 'users(primaryEmail,suspended)');
+      return this.evaluateSuperAdminCount(meta, admins.length);
+    } catch (error: unknown) {
+      return this.manualCheck(meta, humanizeApiFailure(error, 'Directory user list'));
+    }
+  }
+
+  private evaluateSuperAdminCount(meta: CheckMeta, count: number): HardeningCheck {
+    const base = this.baseFrom(meta);
+    const currentValue = `${count} super admin${count === 1 ? '' : 's'}`;
+    if (count >= 2 && count <= 4) {
+      return { ...base, status: 'pass', source: 'auto', currentValue };
+    }
+    const issue =
+      count === 0
+        ? 'Directory returned no active super admins. Confirm the signed-in account has the privileges to list users.'
+        : count === 1
+          ? 'Only one super admin exists, so there is no backup if that account is lost or locked out.'
+          : `${count} super admins is more than needed. Move day-to-day admins to delegated admin roles.`;
+    return { ...base, status: 'warning', source: 'auto', currentValue, issues: [issue] };
+  }
+
+  async checkAdminTwoSv(userEmail: string): Promise<HardeningCheck> {
+    const meta: CheckMeta = {
+      id: 'admin-2sv',
+      category: 'Administrator Accounts',
+      name: 'Admin 2-Step Verification',
+      description: '2-Step Verification enrollment for super admins and delegated admins',
+      severity: 'critical',
+      recommendedValue: 'Every admin enrolled',
+      rationale:
+        'A stolen admin password without a second factor gives an attacker control of the tenant. Admin accounts are the first thing attackers go after.',
+      recommendation:
+        'Enroll every super admin and delegated admin in 2-Step Verification now. Use security keys for these accounts where possible.',
+      adminConsoleUrl: 'https://admin.google.com/ac/security/2sv',
+    };
+    try {
+      const admin = await this.adminFor(userEmail);
+      const fields = 'users(primaryEmail,isEnrolledIn2Sv,suspended)';
+      const superAdmins = await this.listDirectoryUsers(admin, 'isAdmin=true', fields);
+      const delegated = await this.listDirectoryUsers(admin, 'isDelegatedAdmin=true', fields);
+      return this.evaluateAdminTwoSv(meta, superAdmins, delegated);
+    } catch (error: unknown) {
+      return this.manualCheck(meta, humanizeApiFailure(error, 'Directory user list'));
+    }
+  }
+
+  private evaluateAdminTwoSv(
+    meta: CheckMeta,
+    superAdmins: Array<Record<string, any>>,
+    delegated: Array<Record<string, any>>
+  ): HardeningCheck {
+    const base = this.baseFrom(meta);
+    const superEmails = new Set(superAdmins.map((user) => user.primaryEmail));
+    const delegatedOnly = delegated.filter((user) => !superEmails.has(user.primaryEmail));
+    const missingSuper = superAdmins.filter((user) => user.isEnrolledIn2Sv !== true);
+    const missingDelegated = delegatedOnly.filter((user) => user.isEnrolledIn2Sv !== true);
+    const total = superAdmins.length + delegatedOnly.length;
+    const enrolled = total - missingSuper.length - missingDelegated.length;
+    const currentValue = `${enrolled} of ${total} admins enrolled`;
+
+    const issues: string[] = [];
+    if (missingSuper.length > 0) {
+      issues.push(`Super admins not enrolled: ${joinNames(missingSuper.map((user) => user.primaryEmail))}.`);
+    }
+    if (missingDelegated.length > 0) {
+      issues.push(`Delegated admins not enrolled: ${joinNames(missingDelegated.map((user) => user.primaryEmail))}.`);
+    }
+    if (total === 0) {
+      issues.push('Directory returned no active admins. Confirm the signed-in account has the privileges to list users.');
+    }
+
+    const status: HardeningCheck['status'] =
+      missingSuper.length > 0 ? 'fail' : missingDelegated.length > 0 || total === 0 ? 'warning' : 'pass';
+    return {
+      ...base,
+      status,
+      source: 'auto',
+      currentValue,
+      issues: issues.length ? issues : undefined,
+    };
+  }
+
+  private administratorAccountPolicyChecks(snapshot: PolicySnapshot): HardeningCheck[] {
+    return [
+      this.policyCheck(
+        snapshot,
+        {
+          id: 'super-admin-recovery',
+          category: 'Administrator Accounts',
+          name: 'Super Admin Account Recovery',
+          description: 'Whether super admins can recover their own accounts',
+          severity: 'high',
+          recommendedValue: 'Off',
+          rationale:
+            'Self-service recovery lets anyone who controls a super admin’s recovery phone or email take over that account. Super admin accounts are too powerful to rely on that path.',
+          recommendation:
+            'Turn self-service recovery off for super admins. Keep two or more super admins so one can reset the other.',
+          adminConsoleUrl: 'https://admin.google.com/ac/security',
+        },
+        'security.super_admin_account_recovery',
+        (value) => {
+          const enabled = readBool(value, 'enableAccountRecovery') ?? false;
+          return {
+            status: enabled ? 'warning' : 'pass',
+            currentValue: enabled ? 'Self-service recovery on' : 'Self-service recovery off',
+          };
+        },
+        { defaultValue: { enableAccountRecovery: false } }
+      ),
+    ];
+  }
+
   // --- Authentication -------------------------------------------------------
 
   /**
-   * 2FA enforcement — inferred from the share of users flagged as enforced,
-   * since there is no single org-level read for the enforcement schedule.
+   * 2-Step Verification enforcement. The root org unit's
+   * `security.two_step_verification_enforcement` policy is the primary signal.
+   * The Directory per-user ratio (active users only) is supporting detail, and
+   * the fallback when the Policy API is unavailable.
    */
-  async check2FAEnforcement(userEmail: string): Promise<HardeningCheck> {
+  async check2FAEnforcement(
+    userEmail: string,
+    snapshot?: PolicySnapshot,
+    now: Date = new Date()
+  ): Promise<HardeningCheck> {
     const meta: CheckMeta = {
       id: '2fa-enforcement',
       category: 'Authentication',
@@ -358,16 +766,20 @@ export class HardeningService extends WorkspaceService {
       rationale:
         'Account takeover is the most common path into a Workspace tenant. Without enforced 2-Step Verification, a phished password is often enough to read mail, reset other accounts, and move data.',
       recommendation:
-        'Enforce 2-Step Verification org-wide (or by OU with a short grace period for onboarding). Prioritize admins and externally facing roles first. This check samples Directory enforcement flags — confirm the org 2SV schedule in Admin console if numbers look off.',
+        'Enforce 2-Step Verification for the whole organization, with a short grace period for new users. Enroll admins and externally facing roles first. Check the enforcement date in the Admin console if it is scheduled for the future.',
       adminConsoleUrl: 'https://admin.google.com/ac/security/2sv',
     };
+
+    let counted: TwoSvCount | null = null;
+    let countError: unknown;
     try {
       const admin = await this.adminFor(userEmail);
-      const counted = await countEnforced2sv(async (pageToken) => {
+      counted = await countEnforced2sv(async (pageToken) => {
         const usersResponse = await this.withRetry(() =>
           admin.users.list({
             customer: 'my_customer',
             maxResults: 500,
+            query: 'isSuspended=false',
             pageToken,
             fields: 'users(isEnforcedIn2Sv),nextPageToken',
           })
@@ -377,27 +789,53 @@ export class HardeningService extends WorkspaceService {
           nextPageToken: usersResponse.data.nextPageToken,
         };
       });
-      const summary = summarize2svCoverage(counted.enforced, counted.total, counted.complete);
+    } catch (error: unknown) {
+      countError = error;
+    }
+    const ratio = counted
+      ? summarize2svCoverage(counted.enforced, counted.total, counted.complete)
+      : null;
+
+    if (snapshot?.available) {
+      const policy = evaluate2svEnforcement(snapshot, now);
+      const issues = [...policy.issues];
+      issues.push(
+        ratio
+          ? `Per-user check: ${ratio.currentValue} among active users.`
+          : humanizeApiFailure(countError, 'Directory user list')
+      );
       return {
         ...this.baseFrom(meta),
-        status: summary.status,
+        status: policy.status,
         source: 'auto',
-        currentValue: summary.currentValue,
+        currentValue: policy.currentValue,
+        issues,
       };
-    } catch (error: unknown) {
+    }
+
+    if (!ratio) {
       return {
         ...this.baseFrom(meta),
         status: 'warning',
         source: 'auto',
         currentValue: 'Unable to measure',
-        issues: [humanizeApiFailure(error, 'Directory user list')],
+        issues: [humanizeApiFailure(countError, 'Directory user list')],
       };
     }
+    return {
+      ...this.baseFrom(meta),
+      status: ratio.status,
+      source: 'auto',
+      currentValue: ratio.currentValue,
+      issues: [
+        'The Policy API is unavailable, so this result comes from per-user enforcement flags for active users. Confirm the organization-wide setting in the Admin console.',
+      ],
+    };
   }
 
   /**
-   * Per-user 2-step enrollment and enforcement. Same Directory user scope as
-   * the checklist percentage; this call keeps name and email.
+   * Per-user 2-step enrollment and enforcement for every Directory user,
+   * suspended users included. Keeps name and email.
    */
   async listTwoSvUsers(userEmail: string): Promise<TwoSvReport> {
     const admin = await this.adminFor(userEmail);
@@ -428,28 +866,21 @@ export class HardeningService extends WorkspaceService {
           name: 'Strong Password Policy',
           description: 'Password strength and enforcement requirements',
           severity: 'high',
-          recommendedValue: 'Strong, enforced at login',
+          recommendedValue: 'Strong, 12+ characters, enforced at login',
           rationale:
             'Weak or reused passwords remain a major breach vector, especially for accounts that are not yet on hardware keys or strong 2SV methods.',
           recommendation:
-            'Require strong passwords (minimum length 12+ is a practical baseline) and enforce requirements at next sign-in. Pair with 2SV rather than relying on password strength alone.',
+            'Require strong passwords with a minimum length of 12 and enforce the requirements at sign-in. Pair with 2SV rather than relying on password strength alone.',
           adminConsoleUrl: 'https://admin.google.com/ac/security/passwordmanagement',
         },
         'security.password',
-        (value) => {
-          const strength = readString(value, 'allowedStrength');
-          const enforced = readBool(value, 'enforceRequirementsAtLogin');
-          const min = value['minimumLength'];
-          const isStrong = strength === 'STRONG';
-          const parts = [
-            `Strength: ${strength ?? 'unknown'}`,
-            typeof min === 'number' ? `min length: ${min}` : null,
-            `enforced at login: ${enforced ? 'yes' : 'no'}`,
-          ].filter(Boolean);
-          return {
-            status: isStrong && enforced ? 'pass' : isStrong || enforced ? 'warning' : 'fail',
-            currentValue: parts.join(', '),
-          };
+        evaluatePasswordPolicy,
+        {
+          defaultValue: {
+            allowedStrength: 'STRONG',
+            minimumLength: 8,
+            enforceRequirementsAtLogin: false,
+          },
         }
       ),
       this.policyCheck(
@@ -476,6 +907,46 @@ export class HardeningService extends WorkspaceService {
           };
         }
       ),
+      this.policyCheck(
+        snapshot,
+        {
+          id: 'security-keys',
+          category: 'Authentication',
+          name: 'Security Keys for High-Value Accounts',
+          description: 'Whether any org unit or group is limited to security keys or passkeys',
+          severity: 'high',
+          recommendedValue: 'Security keys or passkeys for admins and high-value accounts',
+          rationale:
+            'Text-message and app codes can be phished. Security keys and passkeys resist phishing, which matters most for admins, finance, and executives.',
+          recommendation:
+            'Create an org unit or group for admins and other high-value accounts and limit its 2-Step Verification methods to security keys or passkeys. Keep other users on the broader set of methods if keys are not practical for them.',
+          adminConsoleUrl: 'https://admin.google.com/ac/security/2sv',
+        },
+        'security.two_step_verification_enforcement_factor',
+        (value, lookup) => {
+          const rootSet = lookup.found
+            ? (readString(value, 'allowedSignInFactorSet') ?? 'ALL')
+            : 'ALL';
+          const restricted = (set: string | undefined) => !!set && PHISHING_RESISTANT_FACTOR_SETS.has(set);
+          const scopes = snapshot
+            .overrides('security.two_step_verification_enforcement_factor')
+            .filter((scope) => restricted(readString(scope.value, 'allowedSignInFactorSet')));
+          const rootLabel = `Top-level: ${factorSetLabel(rootSet)}`;
+          if (restricted(rootSet) || scopes.length > 0) {
+            return {
+              status: 'pass',
+              currentValue: scopes.length
+                ? `${rootLabel}. Keys or passkeys required for ${scopeCountLabel(scopes.length)}`
+                : rootLabel,
+            };
+          }
+          return {
+            status: 'info',
+            currentValue: `${rootLabel}. No org unit or group requires security keys or passkeys`,
+          };
+        },
+        { evaluateOnMissing: true }
+      ),
     ];
   }
 
@@ -486,6 +957,7 @@ export class HardeningService extends WorkspaceService {
     const gmailEndUser = 'https://admin.google.com/ac/apps/gmail/enduseraccess';
     const gmailSafety = 'https://admin.google.com/ac/apps/gmail/safety';
     const gmailSpam = 'https://admin.google.com/ac/apps/gmail/spam';
+    const gmailCompliance = 'https://admin.google.com/ac/apps/gmail/compliance';
 
     return [
       this.manualCheck(
@@ -639,7 +1111,7 @@ export class HardeningService extends WorkspaceService {
           rationale:
             'Bypassing spam filters for “trusted” senders is a common attacker pivot: once an allowlisted address is compromised or spoofed, malicious mail skips controls.',
           recommendation:
-            'Avoid org-wide warning-banner hides and broad bypass lists. Prefer narrow exceptions with an owner and review date. Never hide warnings for all senders.',
+            'Avoid org-wide warning-banner hides and broad bypass lists. Prefer narrow exceptions with an owner and review date. Never hide warnings for all senders. If an approved sender list must exist, require authentication for every entry and list full email addresses, not domains.',
           adminConsoleUrl: gmailSpam,
         },
         'gmail.spam_override_lists',
@@ -657,7 +1129,11 @@ export class HardeningService extends WorkspaceService {
             return { status: 'fail', currentValue: 'Warnings hidden for all senders' };
           }
           if (bypasses) {
-            return { status: 'warning', currentValue: 'Some spam bypass configured' };
+            return {
+              status: 'warning',
+              currentValue: 'Some spam bypass configured',
+              issues: this.approvedSenderFindings(snapshot, list),
+            };
           }
           return { status: 'pass', currentValue: 'No spam bypasses' };
         },
@@ -688,7 +1164,141 @@ export class HardeningService extends WorkspaceService {
         },
         { defaultValue: { enableAutoForwarding: true } }
       ),
+      this.policyCheckAll(
+        snapshot,
+        {
+          id: 'gmail-pop-imap',
+          category: 'Email',
+          name: 'POP and IMAP Access',
+          description: 'Whether users can read Gmail from POP or IMAP mail clients',
+          severity: 'high',
+          recommendedValue: 'POP and IMAP off',
+          rationale:
+            'POP and IMAP let desktop and third-party mail clients copy a whole mailbox. Those clients often skip modern sign-in protections, which makes them a quiet path for data theft after a password leak.',
+          recommendation:
+            'Turn POP and IMAP off for everyone. If an app or device still needs one of them, enable it only for the OU or group that uses it and plan a move to OAuth-based access.',
+          adminConsoleUrl: gmailEndUser,
+        },
+        ['gmail.pop_access', 'gmail.imap_access'],
+        ([pop, imap]) => {
+          const popOn = pop ? readBool(pop, 'enablePopAccess') : undefined;
+          const imapOn = imap ? readBool(imap, 'enableImapAccess') : undefined;
+          const label = (on: boolean | undefined) => (on === undefined ? 'unknown' : on ? 'on' : 'off');
+          const currentValue = `POP: ${label(popOn)}, IMAP: ${label(imapOn)}`;
+          if (popOn === true || imapOn === true) return { status: 'warning', currentValue };
+          if (popOn === false && imapOn === false) return { status: 'pass', currentValue };
+          return {
+            status: 'manual',
+            currentValue,
+            issues: ['One of the two settings was not returned. Confirm it in the Admin console.'],
+          };
+        }
+      ),
+      this.policyCheck(
+        snapshot,
+        {
+          id: 'gmail-comprehensive-storage',
+          category: 'Email',
+          name: 'Comprehensive Mail Storage',
+          description: 'Whether a copy of all sent and received mail is stored in user mailboxes',
+          severity: 'medium',
+          recommendedValue: 'On',
+          rationale:
+            'Without it, mail sent or received through non-Gmail mailboxes can be missing from the user’s Gmail. That weakens Vault searches and makes deleted evidence harder to recover.',
+          recommendation:
+            'Turn comprehensive mail storage on, especially if the client uses Vault or routes mail through other systems.',
+          adminConsoleUrl: gmailCompliance,
+        },
+        'gmail.comprehensive_mail_storage',
+        (value) => {
+          const ruleId = readString(value, 'ruleId');
+          return {
+            status: ruleId ? 'pass' : 'warning',
+            currentValue: ruleId ? 'On' : 'Off',
+          };
+        },
+        { evaluateOnMissing: true }
+      ),
+      this.policyCheck(
+        snapshot,
+        {
+          id: 'gmail-ip-allowlist',
+          category: 'Email',
+          name: 'Email IP Allowlist',
+          description: 'IP addresses whose mail skips spam filtering',
+          severity: 'medium',
+          recommendedValue: 'No IP addresses listed',
+          rationale:
+            'Mail from an allowlisted IP address is not marked as spam. If that address range is shared or compromised, malicious mail goes straight to the inbox.',
+          recommendation:
+            'Leave the allowlist empty. Put inbound gateways in the inbound gateway settings instead. If a partner server must be listed, use a single address, not a CIDR range.',
+          adminConsoleUrl: gmailSpam,
+        },
+        'gmail.email_spam_filter_ip_allowlist',
+        (value) => {
+          const raw = readField(value, 'allowedIpAddresses');
+          const addresses = Array.isArray(raw) ? raw : [];
+          return {
+            status: addresses.length === 0 ? 'pass' : 'warning',
+            currentValue:
+              addresses.length === 0
+                ? 'No IP addresses listed'
+                : `${addresses.length} IP address${addresses.length === 1 ? '' : 'es'} or range${addresses.length === 1 ? '' : 's'} listed`,
+          };
+        },
+        { defaultValue: { allowedIpAddresses: [] } }
+      ),
     ];
+  }
+
+  /**
+   * Problems with the approved sender lists behind a spam bypass: entries that
+   * skip authentication and entries that are whole domains. The bypass rule
+   * names lists by id or name; when none match, every saved list is checked.
+   */
+  private approvedSenderFindings(snapshot: PolicySnapshot, overrides: Record<string, unknown>[]): string[] {
+    const referenced = new Set<string>();
+    for (const rule of overrides) {
+      for (const key of ['bypassSenderAllowlist', 'hideWarningBannerSenderAllowlist']) {
+        const entries = readField(rule, key);
+        if (!Array.isArray(entries)) continue;
+        for (const entry of entries) {
+          const text = typeof entry === 'string' ? entry : readString(entry as Record<string, unknown>, 'value');
+          if (text) referenced.add(text);
+        }
+      }
+    }
+
+    const lists: Record<string, unknown>[] = [];
+    for (const policy of snapshot.all('gmail.email_address_lists')) {
+      const value = policy.setting?.value;
+      const nested = readField(value, 'emailAddressList');
+      if (Array.isArray(nested)) lists.push(...(nested as Record<string, unknown>[]));
+      else if (value) lists.push(value);
+    }
+    const matched = lists.filter(
+      (list) => referenced.has(readString(list, 'id') ?? '') || referenced.has(readString(list, 'name') ?? '')
+    );
+
+    const entries = (matched.length > 0 ? matched : lists).flatMap((list) => {
+      const addresses = readField(readField(list, 'addressList') as Record<string, unknown>, 'address');
+      return Array.isArray(addresses) ? (addresses as Record<string, unknown>[]) : [];
+    });
+    const unauthenticated = entries.filter((entry) => readBool(entry, 'requireAddressVerification') !== true);
+    const domains = entries.filter((entry) => !(readString(entry, 'address') ?? '').includes('@'));
+
+    const findings: string[] = [];
+    if (unauthenticated.length > 0) {
+      findings.push(
+        `${unauthenticated.length} approved sender${unauthenticated.length === 1 ? '' : 's'} do${unauthenticated.length === 1 ? 'es' : ''} not require authentication. A spoofed message from these senders skips spam checks.`
+      );
+    }
+    if (domains.length > 0) {
+      findings.push(
+        `${domains.length} approved sender${domains.length === 1 ? ' is a whole domain' : 's are whole domains'}. Use full email addresses instead.`
+      );
+    }
+    return findings;
   }
 
   // --- Advanced Phishing & Malware -----------------------------------------
@@ -898,7 +1508,8 @@ export class HardeningService extends WorkspaceService {
             status: mode === 'DISALLOWED' || mode === 'ALLOWLISTED_DOMAINS' ? 'pass' : 'warning',
             currentValue: humanEnum(mode),
           };
-        }
+        },
+        { defaultValue: EXTERNAL_SHARING_DEFAULTS }
       ),
       this.policyCheck(
         snapshot,
@@ -974,6 +1585,139 @@ export class HardeningService extends WorkspaceService {
           };
         },
         { defaultValue: { accessCheckerSuggestions: 'RECIPIENTS_OR_AUDIENCE_OR_PUBLIC' } }
+      ),
+      this.policyCheck(
+        snapshot,
+        {
+          id: 'drive-external-warning',
+          category: 'Google Drive',
+          name: 'External Sharing Warning',
+          description: 'Warn users when they share files outside the organization',
+          severity: 'medium',
+          recommendedValue: 'ON',
+          rationale:
+            'A warning at the moment of sharing catches mistakes, such as picking the wrong person from autocomplete, before a file leaves the organization.',
+          recommendation:
+            'Keep the external sharing warning ON. It costs users one click and prevents accidental disclosure.',
+          adminConsoleUrl: sharing,
+        },
+        'drive_and_docs.external_sharing',
+        (value) => {
+          const warn = sharingFlag(value, 'warnForExternalSharing');
+          if (!warn && externalSharingOff(value)) {
+            return { status: 'pass', currentValue: 'Not needed (external sharing is off)' };
+          }
+          return { status: warn ? 'pass' : 'warning', currentValue: warn ? 'On' : 'Off' };
+        },
+        { defaultValue: EXTERNAL_SHARING_DEFAULTS }
+      ),
+      this.policyCheck(
+        snapshot,
+        {
+          id: 'drive-publishing',
+          category: 'Google Drive',
+          name: 'Publishing Files to the Web',
+          description: 'Whether users can make files visible to anyone with the link',
+          severity: 'high',
+          recommendedValue: 'Off',
+          rationale:
+            'A published file can be opened by anyone on the internet and found by search engines. Once a link spreads, the client cannot pull it back.',
+          recommendation:
+            'Turn publishing off. If marketing or support teams need public documents, allow it for their OU or group only.',
+          adminConsoleUrl: sharing,
+        },
+        'drive_and_docs.external_sharing',
+        (value) => {
+          const allowed = sharingFlag(value, 'allowPublishingFiles');
+          if (allowed && externalSharingOff(value)) {
+            return { status: 'pass', currentValue: 'Not possible (external sharing is off)' };
+          }
+          return {
+            status: allowed ? 'warning' : 'pass',
+            currentValue: allowed ? 'Users can publish' : 'Publishing off',
+          };
+        },
+        { defaultValue: EXTERNAL_SHARING_DEFAULTS }
+      ),
+      this.policyCheck(
+        snapshot,
+        {
+          id: 'drive-non-google-invites',
+          category: 'Google Drive',
+          name: 'Sharing with Non-Google Users',
+          description: 'Whether users can share files with people who do not use a Google Account',
+          severity: 'medium',
+          recommendedValue: 'Off',
+          rationale:
+            'Visitor sharing sends a PIN to any email address. The client cannot see who controls that address or whether the account behind it is secure.',
+          recommendation:
+            'Turn this off unless the client works with partners who cannot use Google Accounts. If it is needed, limit it to the OU or group that works with those partners.',
+          adminConsoleUrl: sharing,
+        },
+        'drive_and_docs.external_sharing',
+        (value) => {
+          const allowed = sharingFlag(value, 'allowNonGoogleInvites');
+          if (allowed && externalSharingOff(value)) {
+            return { status: 'pass', currentValue: 'Not possible (external sharing is off)' };
+          }
+          return {
+            status: allowed ? 'warning' : 'pass',
+            currentValue: allowed ? 'Allowed' : 'Off',
+          };
+        },
+        { defaultValue: EXTERNAL_SHARING_DEFAULTS }
+      ),
+      this.policyCheck(
+        snapshot,
+        {
+          id: 'drive-receive-external',
+          category: 'Google Drive',
+          name: 'Receiving External Files',
+          description: 'Whether users can receive files from outside the organization',
+          severity: 'low',
+          recommendedValue: 'Org-dependent',
+          rationale:
+            'Blocking inbound files stops outsiders from dropping unwanted or malicious files into Drive, but it also blocks normal work with partners and customers.',
+          recommendation:
+            'Leave this on if the client collaborates with outside parties. If it needs limits, use trust rules to accept files only from named domains or organizations.',
+          adminConsoleUrl: sharing,
+        },
+        'drive_and_docs.external_sharing',
+        (value) => {
+          const allowed = sharingFlag(value, 'allowReceivingExternalFiles');
+          return {
+            status: 'info',
+            currentValue: allowed ? 'Users can receive external files' : 'Blocked',
+          };
+        },
+        { defaultValue: EXTERNAL_SHARING_DEFAULTS }
+      ),
+      this.policyCheck(
+        snapshot,
+        {
+          id: 'drive-shared-drive-move',
+          category: 'Google Drive',
+          name: 'Moving Content to Other Organizations',
+          description: 'Who can move files from shared drives into another organization',
+          severity: 'medium',
+          recommendedValue: 'Internal users only',
+          rationale:
+            'Anyone allowed to upload or move content to another organization’s shared drive can copy company files out in bulk without a sharing prompt.',
+          recommendation:
+            'Limit this to internal users, or to no one. Allow it for specific teams only when they have a documented reason.',
+          adminConsoleUrl: sharing,
+        },
+        'drive_and_docs.external_sharing',
+        (value) => {
+          const parties =
+            readString(value, 'allowedPartiesForDistributingContent') ??
+            (EXTERNAL_SHARING_DEFAULTS.allowedPartiesForDistributingContent as string);
+          return {
+            status: parties === 'ALL_ELIGIBLE_USERS' ? 'warning' : 'pass',
+            currentValue: humanEnum(parties),
+          };
+        },
+        { defaultValue: EXTERNAL_SHARING_DEFAULTS }
       ),
       this.manualCheck(
         {
@@ -1082,6 +1826,127 @@ export class HardeningService extends WorkspaceService {
     ];
   }
 
+  // --- Groups ---------------------------------------------------------------
+
+  private groupsChecks(snapshot: PolicySnapshot): HardeningCheck[] {
+    const groupsSettings = 'https://admin.google.com/ac/apps/groups';
+    const defaults = {
+      collaborationCapability: 'DOMAIN_USERS_ONLY',
+      createGroupsAccessLevel: 'USERS_IN_DOMAIN',
+      ownersCanAllowExternalMembers: false,
+      ownersCanAllowIncomingMailFromPublic: true,
+    };
+
+    return [
+      this.policyCheck(
+        snapshot,
+        {
+          id: 'groups-creation',
+          category: 'Groups',
+          name: 'Who Can Create Groups',
+          description: 'Which users can create new Google Groups',
+          severity: 'medium',
+          recommendedValue: 'Admins only',
+          rationale:
+            'Groups often control access to files, shared drives, and apps. When anyone can create one, the client ends up with groups nobody reviews and access nobody can explain.',
+          recommendation:
+            'Limit group creation to admins. For larger teams, let a small IT or operations group create groups through a request process.',
+          adminConsoleUrl: groupsSettings,
+        },
+        'groups_for_business.groups_sharing',
+        (value) => {
+          const level =
+            readString(value, 'createGroupsAccessLevel') ?? defaults.createGroupsAccessLevel;
+          const label =
+            level === 'ADMIN_ONLY'
+              ? 'Admins only'
+              : level === 'USERS_IN_DOMAIN'
+                ? 'Anyone in the organization'
+                : level === 'ANYONE_CAN_CREATE'
+                  ? 'Anyone, including outsiders'
+                  : level;
+          return { status: level === 'ADMIN_ONLY' ? 'pass' : 'warning', currentValue: label };
+        },
+        { defaultValue: defaults }
+      ),
+      this.policyCheck(
+        snapshot,
+        {
+          id: 'groups-external-access',
+          category: 'Groups',
+          name: 'External Access to Groups',
+          description: 'Whether groups can include outside members or accept mail from the public',
+          severity: 'medium',
+          recommendedValue: 'Organization only, owners cannot open groups to outsiders',
+          rationale:
+            'Internal groups that accept outside members or public mail leak conversations and can let outsiders reach internal distribution lists. Public posting also gives attackers a spam and phishing path.',
+          recommendation:
+            'Limit group access to the organization and stop group owners from adding external members or accepting public mail. Allow exceptions for specific groups, such as a support alias, and keep them separate from internal groups.',
+          adminConsoleUrl: groupsSettings,
+        },
+        'groups_for_business.groups_sharing',
+        (value) => {
+          const capability =
+            readString(value, 'collaborationCapability') ?? defaults.collaborationCapability;
+          const externalMembers =
+            readBool(value, 'ownersCanAllowExternalMembers') ?? defaults.ownersCanAllowExternalMembers;
+          const publicMail =
+            readBool(value, 'ownersCanAllowIncomingMailFromPublic') ??
+            defaults.ownersCanAllowIncomingMailFromPublic;
+          const domainOnly = capability === 'DOMAIN_USERS_ONLY';
+          const issues: string[] = [];
+          if (!domainOnly) issues.push('Groups can be opened to people outside the organization.');
+          if (externalMembers) issues.push('Group owners can add external members.');
+          if (publicMail) issues.push('Group owners can allow incoming mail from the public.');
+          return {
+            status: issues.length === 0 ? 'pass' : 'warning',
+            currentValue: [
+              `Access: ${domainOnly ? 'organization only' : 'anyone can access'}`,
+              `external members: ${externalMembers ? 'allowed' : 'blocked'}`,
+              `public mail: ${publicMail ? 'allowed' : 'blocked'}`,
+            ].join(', '),
+            issues: issues.length ? issues : undefined,
+          };
+        },
+        { defaultValue: defaults }
+      ),
+    ];
+  }
+
+  // --- Chat -----------------------------------------------------------------
+
+  private chatChecks(snapshot: PolicySnapshot): HardeningCheck[] {
+    return [
+      this.policyCheck(
+        snapshot,
+        {
+          id: 'chat-external',
+          category: 'Chat',
+          name: 'External Chat',
+          description: 'Whether users can chat with people outside the organization',
+          severity: 'medium',
+          recommendedValue: 'Off, or limited to trusted domains',
+          rationale:
+            'Open external chat gives phishers and scammers a direct line to staff, and it is an easy way to move files and data out of the organization.',
+          recommendation:
+            'Turn external chat off, or limit it to trusted domains for the partners the client works with. Allow unrestricted external chat only for teams that need it.',
+          adminConsoleUrl: 'https://admin.google.com/ac/apps/chat',
+        },
+        'chat.external_chat_restriction',
+        (value) => {
+          const allowed = readBool(value, 'allowExternalChat') ?? false;
+          const restriction = readString(value, 'externalChatRestriction') ?? 'NO_RESTRICTION';
+          if (!allowed) return { status: 'pass', currentValue: 'External chat off' };
+          if (restriction === 'TRUSTED_DOMAINS') {
+            return { status: 'pass', currentValue: 'Limited to trusted domains' };
+          }
+          return { status: 'warning', currentValue: 'Unrestricted external chat' };
+        },
+        { defaultValue: { allowExternalChat: false, externalChatRestriction: 'NO_RESTRICTION' } }
+      ),
+    ];
+  }
+
   // --- Login challenges -----------------------------------------------------
 
   private loginChallengeChecks(snapshot: PolicySnapshot): HardeningCheck[] {
@@ -1177,10 +2042,10 @@ export class HardeningService extends WorkspaceService {
           category: 'Data Download',
           name: 'Less Secure Apps',
           description: 'Access for apps using less secure sign-in technology',
-          severity: 'critical',
+          severity: 'low',
           recommendedValue: 'Disabled',
           rationale:
-            'Less secure apps use password-based access that bypasses modern OAuth and often 2SV. They are obsolete and high-risk for account takeover.',
+            'Less secure apps use password-only sign-in that bypasses OAuth and 2SV. Google turned off less secure app access for Workspace accounts in 2024, so this setting rarely has an effect now. Google’s checklist still lists it, so the audit keeps it.',
           recommendation:
             'Disable for all users. Migrate any remaining integrations to OAuth or service accounts. Temporary exceptions should be time-boxed and tracked as waivers.',
           adminConsoleUrl: 'https://admin.google.com/ac/security/lsa',
@@ -1235,6 +2100,30 @@ export class HardeningService extends WorkspaceService {
           adminConsoleUrl: 'https://admin.google.com/ac/security/caa',
         },
         'Enterprise-only and context-specific — verify in Admin console.'
+      ),
+      this.policyCheck(
+        snapshot,
+        {
+          id: 'third-party-apps',
+          category: 'Apps Control',
+          name: 'Unconfigured Third-Party Apps',
+          description: 'Access level for third-party apps the organization has not configured',
+          severity: 'high',
+          recommendedValue: 'Block all, or sign-in only',
+          rationale:
+            'Any third-party app a user approves can read mail, files, and contacts with that user’s access. Attackers use fake apps to harvest data without ever stealing a password.',
+          recommendation:
+            'Set unconfigured apps to blocked, or to sign-in only if the client uses Sign in with Google. Review requests and trust the apps the business needs one by one.',
+          adminConsoleUrl: 'https://admin.google.com/ac/owl',
+        },
+        'api_controls.unconfigured_third_party_apps',
+        (value) => {
+          const level = readString(value, 'accessLevel') ?? 'ACCESS_LEVEL_UNSPECIFIED';
+          if (level === 'BLOCK_ALL') return { status: 'pass', currentValue: 'Blocked' };
+          if (level === 'ALLOW_SIGN_IN_ONLY') return { status: 'pass', currentValue: 'Sign-in only' };
+          return { status: 'warning', currentValue: 'All access allowed' };
+        },
+        { defaultValue: { accessLevel: 'ACCESS_LEVEL_UNSPECIFIED' } }
       ),
       this.serviceCatalogCheck(
         {
@@ -1324,7 +2213,7 @@ export class HardeningService extends WorkspaceService {
   private adminAlertCheck(snapshot: PolicySnapshot): HardeningCheck {
     const meta: CheckMeta = {
       id: 'chrome-admin-alerts',
-      category: 'Chrome Managed Browsers',
+      category: 'Alerts',
       name: 'Admin Alerts',
       description: 'Alerting for sensitive admin changes',
       severity: 'high',
@@ -1479,8 +2368,15 @@ export class HardeningService extends WorkspaceService {
     // row. Unavailability is returned as policyApi meta for a UI banner; individual
     // policy-backed checks degrade to manual with stable copy.
 
-    // Authentication
-    checks.push(await this.check2FAEnforcement(userEmail));
+    // Administrator Accounts and Authentication
+    const [superAdminCount, adminTwoSv, twoSvEnforcement] = await Promise.all([
+      this.checkSuperAdminCount(userEmail),
+      this.checkAdminTwoSv(userEmail),
+      this.check2FAEnforcement(userEmail, snapshot),
+    ]);
+    checks.push(superAdminCount, adminTwoSv);
+    checks.push(...this.administratorAccountPolicyChecks(snapshot));
+    checks.push(twoSvEnforcement);
     checks.push(...this.authenticationChecks(snapshot));
 
     // Email — DNS (SPF/DKIM/DMARC)
@@ -1518,6 +2414,10 @@ export class HardeningService extends WorkspaceService {
 
     // Calendar
     checks.push(...this.calendarChecks(snapshot));
+
+    // Groups and Chat
+    checks.push(...this.groupsChecks(snapshot));
+    checks.push(...this.chatChecks(snapshot));
 
     // Google Drive
     checks.push(...this.driveChecks(snapshot));
@@ -1583,6 +2483,7 @@ export class HardeningService extends WorkspaceService {
       fail: checks.filter((c) => c.status === 'fail').length,
       manual: checks.filter((c) => c.status === 'manual').length,
       info: checks.filter((c) => c.status === 'info').length,
+      score: computeHardeningScore(checks),
     };
 
     return { checks, statistics, policyApi };
