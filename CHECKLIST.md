@@ -15,7 +15,7 @@ When the Policy API is unavailable (API off, missing DWD scope, or caller not su
 ## Check catalog
 
 ### Authentication
-- **Auto** — 2-Step Verification (Directory enrollment, paged)
+- **Auto** — 2-Step Verification (Directory enrollment, paged). The 2FA Report lists name, email, enrolled, and enforced.
 - **Auto** — Strong password policy (`security.password`)
 - **Auto** — Advanced Protection Program
 
@@ -43,6 +43,19 @@ When the Policy API is unavailable (API off, missing DWD scope, or caller not su
 
 ### Apps control
 - **Manual** — Context-Aware Access, core apps, additional apps (per-OU decisions)
+
+### Severity
+
+Severity is how urgent the control is in a client review. It is separate from pass / fail.
+
+| Severity | Use |
+|----------|-----|
+| Critical | Account takeover or domain spoofing with little legitimate reason to leave it weak: 2-Step Verification, SPF, DKIM, DMARC, attachment / link / spoofing protections, less secure apps |
+| High | Material leak or a control that should be on, with a narrower exception: external-recipient warning, external Drive link sharing, default file access, pre-delivery scanning, spam bypass, Takeout, DLP, post-SSO, Chrome updates, admin alerts, password strength |
+| Medium | Real control with a common business exception, shown as info when the choice is org-dependent: automatic forwarding, mail delegation, calendar sharing, Drive desktop / offline / shared-drive creation, add-ons, core and additional apps |
+| Low | Hygiene: read receipts, confidential mode, calendar external-guest warning, sharing suggestions, employee-ID login challenge |
+
+Automatic forwarding is **medium** and **info** when it is allowed. It is not scored as a fail.
 
 ---
 
@@ -110,5 +123,5 @@ Run the checklist as a Workspace **super admin**.
 
 - Some settings are always manual (no Google API)
 - DNS checks need outbound DNS from the service
-- 2FA coverage pages through Directory users. A scan that hits the 50,000-user cap cannot pass
+- 2FA coverage pages through Directory users. A scan that hits the 50,000-user cap cannot pass. The 2FA Report uses the same cap.
 - Enterprise-only features (DLP, CAA) may be unavailable on the SKU

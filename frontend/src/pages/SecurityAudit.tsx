@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Box,
   Typography,
@@ -39,6 +40,7 @@ import {
 import { ExportMenuRow } from '../components/ExportButton';
 import { ActionTooltip } from '../components/ActionTooltip';
 import { getApiErrorMessage } from '../utils/apiError';
+import { hardeningChecksToCsv } from '../utils/checklistCsv';
 import { ColumnHeader } from '../components/ui/ColumnHeader';
 import { ListShell, ListHeaderRow, ListDataRow } from '../components/ui/ListShell';
 import { DotLabel } from '../components/StatusDot';
@@ -454,6 +456,7 @@ function applyPayload(
 export function SecurityAudit() {
   const theme = useTheme();
   const isMdUp = useMediaQuery(theme.breakpoints.up('md'));
+  const navigate = useNavigate();
   const { isSuperAdmin, canTakeAction } = usePermissions();
 
   const auditCols = useResizableColumns(
@@ -597,24 +600,17 @@ export function SecurityAudit() {
     }
   };
 
-  const handleExportCSV = async () => {
+  const handleExportCSV = () => {
     setExportAnchorEl(null);
-    const filename = `gws-hardening-${new Date().toISOString().split('T')[0]}.csv`;
+    if (!hardeningData || hardeningData.checks.length === 0) {
+      showSnackbar('No data to export. Run the checklist first.', 'info');
+      return;
+    }
     try {
-      const response = await apiClient.get('/audit/hardening/export', { responseType: 'blob' });
-      if (response.status < 200 || response.status >= 300) {
-        const text = await (response.data as Blob).text();
-        let msg = 'Export failed.';
-        try {
-          const err = JSON.parse(text);
-          if (err?.error) msg = err.error;
-        } catch {
-          /* ignore */
-        }
-        showSnackbar(msg, 'error');
-        return;
-      }
-      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'text/csv;charset=utf-8' }));
+      const csv = hardeningChecksToCsv(hardeningData.checks, waivers);
+      const date = (hardeningData.ranAt || new Date().toISOString()).split('T')[0];
+      const filename = `security-checklist-${date}.csv`;
+      const url = window.URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
       const link = document.createElement('a');
       link.href = url;
       link.setAttribute('download', filename);
@@ -624,17 +620,8 @@ export function SecurityAudit() {
       window.URL.revokeObjectURL(url);
       showSnackbar('CSV downloading now.');
     } catch (error: unknown) {
-      console.error('Error exporting hardening checks:', error);
-      const ax = error as { response?: { status?: number; data?: unknown } };
-      if (ax?.response?.status === 404) {
-        showSnackbar('No saved audit to export. Run the audit first.', 'info');
-        return;
-      }
-      const msg =
-        ax?.response?.data instanceof Blob
-          ? 'Export failed. Check console or try again.'
-          : getApiErrorMessage(error, 'Failed to export CSV.');
-      showSnackbar(msg, 'error');
+      console.error('Error exporting checklist CSV:', error);
+      showSnackbar(getApiErrorMessage(error, 'Failed to export CSV.'), 'error');
     }
   };
 
@@ -1176,8 +1163,8 @@ export function SecurityAudit() {
             anchorEl={exportAnchorEl}
                   open={Boolean(exportAnchorEl)}
                   onClose={() => setExportAnchorEl(null)}
-                  anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-                  transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                  anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+                  transformOrigin={{ vertical: 'top', horizontal: 'left' }}
                   PaperProps={{
                     sx: (th) => ({
                       ...(typeof menuPaperProps.PaperProps.sx === 'function'
@@ -1884,6 +1871,19 @@ export function SecurityAudit() {
                   sx={(th) => dialogSecondaryButtonSx(th)}
                 >
                   Open Admin guide
+                </Button>
+              )}
+              {detailCheck.id === '2fa-enforcement' && (
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={() => {
+                    closeDetail();
+                    navigate('/2fa');
+                  }}
+                  sx={(th) => dialogPrimaryButtonSx(th)}
+                >
+                  2FA Report
                 </Button>
               )}
               <Box sx={{ flex: 1 }} />

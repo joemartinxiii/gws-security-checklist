@@ -1,5 +1,6 @@
 import { http, HttpResponse } from 'msw';
-import { hardeningData, demoHardeningWaivers, setDemoHardeningWaivers } from './fixtures';
+import { hardeningChecksToCsv } from '../utils/checklistCsv';
+import { hardeningData, demoHardeningWaivers, setDemoHardeningWaivers, users } from './fixtures';
 
 const MOCK_USER = {
   email: 'admin@example.com',
@@ -71,9 +72,24 @@ export const handlers = [
     setDemoHardeningWaivers(next);
     return json({ waivers: next, imported: Object.keys(body.waivers || {}).length });
   }),
-  http.get(
-    '*/api/audit/hardening/export',
-    () => new HttpResponse('csv', { headers: { 'Content-Type': 'text/csv' } })
-  ),
+  http.get('*/api/audit/hardening/export', () => {
+    const csv = hardeningChecksToCsv(hardeningData.checks, hardeningData.waivers);
+    return new HttpResponse(csv, {
+      headers: { 'Content-Type': 'text/csv;charset=utf-8' },
+    });
+  }),
   http.post('*/api/audit/hardening/export/drive', () => json({ ...mockDriveLink })),
+  http.get('*/api/audit/2sv', () =>
+    json({
+      generatedAt: '2026-07-09T15:00:00.000Z',
+      truncated: false,
+      users: users.map((user) => ({
+        name: user.name.fullName,
+        email: user.primaryEmail,
+        enrolled: user.isEnrolledIn2Sv === true,
+        enforced: user.isEnforcedIn2Sv === true,
+      })),
+    })
+  ),
+  http.post('*/api/audit/2sv/export/drive', () => json({ ...mockDriveLink })),
 ];

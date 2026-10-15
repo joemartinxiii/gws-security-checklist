@@ -18,6 +18,7 @@ import {
 import { driveExportService } from '../services/driveExport.service';
 import { convertToCSV, sendCSVResponse } from '../utils/csv';
 import { sendApiError } from '../utils/apiError';
+import { twoSvUsersToCsv } from '../services/twoSvReport';
 
 const router = Router();
 
@@ -270,6 +271,39 @@ router.post('/hardening/export/drive', requireSuperAdmin, async (req: AuthReques
     });
   } catch (error: any) {
     sendApiError(res, error, 'Failed to export security audit to Drive', 'audit.hardening.export');
+  }
+});
+
+/**
+ * GET /api/audit/2sv
+ * Live Directory list: name, email, 2-step enrolled, 2-step enforced.
+ */
+router.get('/2sv', requireAnyAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const report = await hardeningService.listTwoSvUsers(req.user!.email);
+    res.json(report);
+  } catch (error: any) {
+    sendApiError(res, error, 'Failed to load 2FA report', 'audit.2sv');
+  }
+});
+
+/**
+ * POST /api/audit/2sv/export/drive
+ * Upload the same four-column CSV to the signed-in admin's Drive.
+ */
+router.post('/2sv/export/drive', requireSuperAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const report = await hardeningService.listTwoSvUsers(req.user!.email);
+    const csv = twoSvUsersToCsv(report.users);
+    const fileName = `2fa-report-${report.generatedAt.split('T')[0]}.csv`;
+    const uploadResult = await driveExportService.uploadFile(req.user!.email, fileName, csv, 'text/csv');
+    res.json({
+      fileId: uploadResult.id,
+      webViewLink: uploadResult.webViewLink,
+      message: '2FA report exported to Google Drive successfully',
+    });
+  } catch (error: any) {
+    sendApiError(res, error, 'Failed to export 2FA report to Drive', 'audit.2sv.export');
   }
 });
 

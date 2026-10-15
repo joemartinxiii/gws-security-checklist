@@ -9,6 +9,7 @@ import {
   readString,
 } from './policy.service';
 import type { PolicyApiMeta, Severity, HardeningStatistics } from './securityAuditStore';
+import { collectTwoSvUsers, type TwoSvReport } from './twoSvReport';
 
 export type { Severity };
 
@@ -334,6 +335,29 @@ export class HardeningService extends WorkspaceService {
     }
   }
 
+  /**
+   * Per-user 2-step enrollment and enforcement. Same Directory user scope as
+   * the checklist percentage; this call keeps name and email.
+   */
+  async listTwoSvUsers(userEmail: string): Promise<TwoSvReport> {
+    const admin = await this.adminFor(userEmail);
+    return collectTwoSvUsers(async (pageToken) => {
+      const usersResponse = await this.withRetry(() =>
+        admin.users.list({
+          customer: 'my_customer',
+          maxResults: 500,
+          pageToken,
+          fields:
+            'users(primaryEmail,name(fullName,givenName,familyName),isEnrolledIn2Sv,isEnforcedIn2Sv),nextPageToken',
+        })
+      );
+      return {
+        users: usersResponse.data.users || [],
+        nextPageToken: usersResponse.data.nextPageToken,
+      };
+    });
+  }
+
   private authenticationChecks(snapshot: PolicySnapshot): HardeningCheck[] {
     return [
       this.policyCheck(
@@ -500,12 +524,12 @@ export class HardeningService extends WorkspaceService {
           category: 'Email',
           name: 'Warn for External Recipients',
           description: 'Warn users before replying to external recipients / sending externally',
-          severity: 'medium',
+          severity: 'high',
           recommendedValue: 'ON',
           rationale:
-            'A simple banner before sending outside the organization reduces accidental disclosure of internal threads and attachments — a frequent SMB incident pattern.',
+            'A banner before sending outside the organization is one of the few controls that stops accidental disclosure of internal threads and attachments. That pattern shows up constantly in SMB incidents, and the user friction is low.',
           recommendation:
-            'Turn the external-recipient warning ON. Low user friction for meaningful risk reduction. Confirm in Admin console (not available via Policy API).',
+            'Turn the external-recipient warning ON. Confirm in Admin console (not available via Policy API).',
           adminConsoleUrl: gmailEndUser,
         },
         'Not exposed by the Policy API — verify in Admin console.'
@@ -577,19 +601,19 @@ export class HardeningService extends WorkspaceService {
           category: 'Email',
           name: 'Automatic Forwarding',
           description: 'Whether users can auto-forward incoming mail externally',
-          severity: 'critical',
-          recommendedValue: 'OFF',
+          severity: 'medium',
+          recommendedValue: 'OFF unless there is a business need',
           rationale:
-            'Automatic forwarding is a classic post-compromise exfiltration path: an attacker (or malware) silently copies all inbound mail to an external address.',
+            'Automatic forwarding can copy inbound mail to an external address, which is also a post-compromise exfiltration path. Many businesses use it on purpose for ticketing, archival, or a shared inbox.',
           recommendation:
-            'Set auto-forwarding to OFF for the organization. If a business process truly requires it, allow only via a controlled group/OU and document the owner — then re-check periodically.',
+            'Prefer OFF by default. Where a process needs it, allow it for a specific OU or group, name an owner, and record that choice. On is not an automatic fail.',
           adminConsoleUrl: gmailEndUser,
         },
         'gmail.auto_forwarding',
         (value) => {
           const enabled = readBool(value, 'enableAutoForwarding');
           return {
-            status: enabled ? 'fail' : 'pass',
+            status: enabled ? 'info' : 'pass',
             currentValue: enabled ? 'Allowed' : 'Off',
           };
         }
@@ -786,12 +810,12 @@ export class HardeningService extends WorkspaceService {
           category: 'Google Drive',
           name: 'Link Sharing (external)',
           description: 'Highest level of sharing allowed outside the organization',
-          severity: 'critical',
+          severity: 'high',
           recommendedValue: 'Off or allowlisted domains',
           rationale:
-            'Unrestricted external sharing is the leading cause of Drive data exposure. “Anyone with the link” and open external sharing make accidental (or malicious) leakage trivial.',
+            'Open external sharing makes accidental Drive leakage easy, including “anyone with the link.” Most businesses still need to share with partners, so this is a high finding to tighten, not a critical fail by default.',
           recommendation:
-            'Prefer OFF for high-sensitivity orgs. If partners need access, use allowlisted domains and specific OUs rather than open external sharing. Pair with the external-sharing scan in this app for live file risk.',
+            'Prefer off, or allowlisted domains, for sensitive data. Use specific people or groups when a file must leave the organization. Avoid org-wide “anyone with the link.”',
           adminConsoleUrl: sharing,
         },
         'drive_and_docs.external_sharing',
@@ -1143,8 +1167,7 @@ export class HardeningService extends WorkspaceService {
     issues?: string[];
     record?: string;
   }): HardeningCheck {
-    const severity: Severity =
-      record.type === 'DMARC' || record.type === 'SPF' ? 'critical' : 'high';
+    const severity: Severity = 'critical';
     const rationaleByType: Record<string, string> = {
       SPF: 'SPF tells receiving servers which hosts may send mail for your domain. Without it (or with a soft fail), spoofed mail from your domain is far easier.',
       DKIM:
@@ -1246,7 +1269,7 @@ export class HardeningService extends WorkspaceService {
           description: 'DNS record validation for SPF, DKIM, and DMARC',
           status: 'warning',
           source: 'auto',
-          severity: 'high',
+          severity: 'critical',
           currentValue: 'Unable to check',
           recommendedValue: 'Configured and enforcing',
           rationale:

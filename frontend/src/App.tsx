@@ -5,6 +5,7 @@ import { useState, useEffect, createContext } from 'react';
 import { Layout } from './components/Layout';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { LoginRoute } from './pages/LoginRoute';
+import { TwoSvReport } from './pages/TwoSvReport';
 import { SecurityAudit } from './pages/SecurityAudit';
 import { T, TDark } from './theme/designTokens';
 
@@ -290,6 +291,16 @@ function App() {
               <ProtectedRoute>
                 <Layout>
                   <SecurityAudit />
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/2fa"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <TwoSvReport />
                 </Layout>
               </ProtectedRoute>
             }
