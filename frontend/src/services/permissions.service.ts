@@ -7,6 +7,8 @@ export interface UserPermissions {
   permissions: Permission[];
   isSuperAdmin: boolean;
   isDelegatedAdmin: boolean;
+  /** Super admin, or a delegated admin listed in GWS_AUDIT_READERS. */
+  canReadStoredAudit?: boolean;
   error?: string | null;
 }
 
@@ -14,6 +16,7 @@ class PermissionsService {
   private permissions: Permission[] | null = null;
   private isSuperAdmin: boolean = false;
   private isDelegatedAdmin: boolean = false;
+  private canReadStoredAudit: boolean = false;
   private cacheExpiry: number = 0;
   private loadError: string | null = null;
   private readonly CACHE_TTL = 5 * 60 * 1000;
@@ -24,6 +27,7 @@ class PermissionsService {
         permissions: this.permissions,
         isSuperAdmin: this.isSuperAdmin,
         isDelegatedAdmin: this.isDelegatedAdmin,
+        canReadStoredAudit: this.canReadStoredAudit,
         error: this.loadError,
       };
     }
@@ -33,10 +37,11 @@ class PermissionsService {
       this.permissions = response.data.permissions;
       this.isSuperAdmin = response.data.isSuperAdmin;
       this.isDelegatedAdmin = response.data.isDelegatedAdmin;
+      this.canReadStoredAudit = response.data.canReadStoredAudit ?? response.data.isSuperAdmin;
       this.cacheExpiry = Date.now() + this.CACHE_TTL;
       this.loadError = null;
 
-      return { ...response.data, error: null };
+      return { ...response.data, canReadStoredAudit: this.canReadStoredAudit, error: null };
     } catch (error: unknown) {
       const body = isAxiosError<{ error?: string; hint?: string }>(error) ? error.response?.data : undefined;
       const errorMsg =
@@ -46,6 +51,7 @@ class PermissionsService {
       this.permissions = [];
       this.isSuperAdmin = false;
       this.isDelegatedAdmin = false;
+      this.canReadStoredAudit = false;
       this.cacheExpiry = 0;
       this.loadError = hint ? `${errorMsg} ${hint}` : errorMsg;
 
@@ -53,6 +59,7 @@ class PermissionsService {
         permissions: [],
         isSuperAdmin: false,
         isDelegatedAdmin: false,
+        canReadStoredAudit: false,
         error: this.loadError,
       };
     }
@@ -70,6 +77,7 @@ class PermissionsService {
 
   clearCache(): void {
     this.permissions = null;
+    this.canReadStoredAudit = false;
     this.cacheExpiry = 0;
   }
 

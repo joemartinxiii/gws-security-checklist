@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { isAxiosError } from 'axios';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -102,18 +103,26 @@ function orderedHardeningCategories(categories: string[]): string[] {
 const LEGACY_IGNORED_KEY = 'gws-hardening-ignored-ids';
 const LEGACY_REASONS_KEY = 'gws-hardening-waive-reasons';
 const LEGACY_MIGRATED_KEY = 'gws-hardening-waivers-migrated';
+const WAIVER_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,79}$/;
+const WAIVER_REASON_MAX = 1000;
+const LEGACY_REASON_FALLBACK = 'Imported from browser (no reason given)';
 
 function loadLegacyLocalWaivers(): Record<string, string> {
   try {
     const idsRaw = localStorage.getItem(LEGACY_IGNORED_KEY);
     const reasonsRaw = localStorage.getItem(LEGACY_REASONS_KEY);
-    const ids: string[] = idsRaw ? JSON.parse(idsRaw) : [];
-    const reasons: Record<string, string> =
-      reasonsRaw && typeof JSON.parse(reasonsRaw) === 'object' ? JSON.parse(reasonsRaw) : {};
+    const ids: unknown = idsRaw ? JSON.parse(idsRaw) : [];
+    const parsedReasons: unknown = reasonsRaw ? JSON.parse(reasonsRaw) : {};
+    const reasons =
+      parsedReasons && typeof parsedReasons === 'object' && !Array.isArray(parsedReasons)
+        ? (parsedReasons as Record<string, unknown>)
+        : {};
     const out: Record<string, string> = {};
     if (Array.isArray(ids)) {
       for (const id of ids) {
-        if (typeof id === 'string') out[id] = typeof reasons[id] === 'string' ? reasons[id] : '';
+        if (typeof id !== 'string' || !WAIVER_ID_PATTERN.test(id)) continue;
+        const raw = typeof reasons[id] === 'string' ? reasons[id].trim() : '';
+        out[id] = (raw || LEGACY_REASON_FALLBACK).slice(0, WAIVER_REASON_MAX);
       }
     }
     return out;
@@ -496,6 +505,7 @@ export function SecurityAudit() {
   const [bootLoading, setBootLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [storedResultsDenied, setStoredResultsDenied] = useState(false);
   const [hardeningData, setHardeningData] = useState<HardeningData | null>(null);
   const [waivers, setWaivers] = useState<Record<string, WaiverEntry>>({});
   const [exportAnchorEl, setExportAnchorEl] = useState<null | HTMLElement>(null);
@@ -555,10 +565,18 @@ export function SecurityAudit() {
             // Delegate or API failure — leave local alone for a super to import later.
           }
         }
+        setStoredResultsDenied(false);
         setLoadError(null);
       } catch (error) {
         if (!cancelled) {
-          setLoadError(getApiErrorMessage(error, 'Failed to load security audit'));
+          if (isAxiosError(error) && error.response?.status === 403) {
+            setStoredResultsDenied(true);
+            setLoadError(null);
+            setHardeningData(null);
+          } else {
+            setStoredResultsDenied(false);
+            setLoadError(getApiErrorMessage(error, 'Failed to load security audit'));
+          }
         }
       } finally {
         if (!cancelled) setBootLoading(false);
@@ -576,6 +594,7 @@ export function SecurityAudit() {
     }
     try {
       setRunning(true);
+      setStoredResultsDenied(false);
       setLoadError(null);
       const response = await apiClient.post<HardeningPayload>('/audit/hardening/run');
       applyPayload(response.data, setHardeningData, setWaivers, setLastRunAt, setTriggeredBy);
@@ -645,6 +664,10 @@ export function SecurityAudit() {
 
   const handleExportDrive = async () => {
     setExportAnchorEl(null);
+    if (!canTakeAction) {
+      showSnackbar('Only super admins can save the checklist to Drive.', 'info');
+      return;
+    }
     try {
       const response = await apiClient.post('/audit/hardening/export/drive');
       if (response.data?.webViewLink) window.open(response.data.webViewLink, '_blank', 'noopener,noreferrer');
@@ -704,20 +727,27 @@ export function SecurityAudit() {
   }, []);
 
   const applyWaive = useCallback(
-    async (checkId: string, reason: string) => {
+    async (checkId: string, reason: string): Promise<boolean> => {
+      const trimmed = reason.trim();
+      if (!trimmed) {
+        showSnackbar('A waiver needs a reason.', 'info');
+        return false;
+      }
       if (!canTakeAction) {
         showSnackbar('Only super admins can change waivers.', 'info');
-        return;
+        return false;
       }
       try {
         setWaiveBusy(true);
         const res = await apiClient.put(`/audit/hardening/waivers/${encodeURIComponent(checkId)}`, {
-          reason: reason.trim(),
+          reason: trimmed,
         });
         setWaivers(res.data.waivers || {});
         showSnackbar('Waiver saved for the organization.');
+        return true;
       } catch (err) {
         showSnackbar(getApiErrorMessage(err, 'Failed to save waiver.'), 'error');
+        return false;
       } finally {
         setWaiveBusy(false);
       }
@@ -1217,6 +1247,7 @@ export function SecurityAudit() {
                     label="Export to Drive"
                     icon={<CloudUpload size={16} strokeWidth={LU} />}
                     onClick={handleExportDrive}
+                    disabled={!canTakeAction}
                   />
                   <ExportMenuRow
                     label="Export to PDF"
@@ -1242,6 +1273,13 @@ export function SecurityAudit() {
           </Alert>
         )}
 
+        {storedResultsDenied && !running && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            Stored checklist results are for super admins. A super admin can add your address to
+            GWS_AUDIT_READERS.
+          </Alert>
+        )}
+
         {loadError && !running && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setLoadError(null)}>
             {loadError}
@@ -1252,7 +1290,7 @@ export function SecurityAudit() {
           <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
             <CircularProgress />
           </Box>
-        ) : hardeningData ? (
+        ) : storedResultsDenied ? null : hardeningData ? (
           <>
             <Box sx={(th) => ({ ...dialogTabRowSx(th), mb: 2.5 })}>
               {AUDIT_TABS.map((label, idx) => (
@@ -1853,6 +1891,7 @@ export function SecurityAudit() {
                     </Typography>
                     <TextField
                       autoFocus
+                      required
                       fullWidth
                       multiline
                       minRows={2}
@@ -1860,16 +1899,21 @@ export function SecurityAudit() {
                       placeholder="e.g. Client accepted residual risk — partner domain allowlist required for ops"
                       value={reasonDraft}
                       onChange={(e) => setReasonDraft(e.target.value)}
+                      inputProps={{ maxLength: WAIVER_REASON_MAX }}
+                      helperText={
+                        reasonDraft.trim()
+                          ? `${reasonDraft.trim().length} / ${WAIVER_REASON_MAX}`
+                          : 'A reason is required.'
+                      }
                       sx={{ mb: 1.5, fontFamily: T.font }}
                     />
                     <Box sx={{ display: 'flex', gap: 1 }}>
                       <Button
                         size="small"
                         variant="contained"
-                        disabled={waiveBusy}
+                        disabled={waiveBusy || !reasonDraft.trim()}
                         onClick={async () => {
-                          await applyWaive(detailCheck.id, reasonDraft);
-                          setReasonEditing(false);
+                          if (await applyWaive(detailCheck.id, reasonDraft)) setReasonEditing(false);
                         }}
                         sx={(th) => dialogPrimaryButtonSx(th)}
                       >
@@ -1937,10 +1981,9 @@ export function SecurityAudit() {
                 <Button
                   size="small"
                   variant="contained"
-                  disabled={waiveBusy || !canTakeAction}
+                  disabled={waiveBusy || !canTakeAction || !reasonDraft.trim()}
                   onClick={async () => {
-                    await applyWaive(detailCheck.id, reasonDraft);
-                    setReasonEditing(false);
+                    if (await applyWaive(detailCheck.id, reasonDraft)) setReasonEditing(false);
                   }}
                   sx={(th) => dialogPrimaryButtonSx(th)}
                 >
