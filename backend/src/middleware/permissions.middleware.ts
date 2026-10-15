@@ -1,66 +1,7 @@
 import { Response, NextFunction } from 'express';
 import { AuthRequest } from './auth.middleware';
-import { permissionsService, Permission } from '../services/permissions.service';
-
-// Cache permissions to avoid repeated API calls
-const permissionsCache = new Map<string, { permissions: Permission[]; expiresAt: number }>();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
-/**
- * Middleware factory to require specific permission(s)
- * Usage: router.post('/', requirePermission('users.create'), handler)
- */
-export function requirePermission(...requiredPermissions: Permission[]) {
-  return async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      if (!req.user?.email) {
-        res.status(401).json({ error: 'Authentication required' });
-        return;
-      }
-
-      const userEmail = req.user.email;
-      
-      // Check cache first
-      let permissions: Permission[];
-      const cached = permissionsCache.get(userEmail);
-      
-      if (cached && cached.expiresAt > Date.now()) {
-        permissions = cached.permissions;
-      } else {
-        // Fetch permissions from Google Workspace
-        permissions = await permissionsService.getUserPermissions(userEmail);
-        
-        // Cache the result
-        permissionsCache.set(userEmail, {
-          permissions,
-          expiresAt: Date.now() + CACHE_TTL,
-        });
-      }
-
-      // Check if user has all required permissions
-      const hasAllPermissions = requiredPermissions.every(permission => 
-        permissions.includes(permission)
-      );
-
-      if (!hasAllPermissions) {
-        const missing = requiredPermissions.filter(p => !permissions.includes(p));
-        res.status(403).json({ 
-          error: 'Insufficient permissions',
-          required: requiredPermissions,
-          missing,
-        });
-        return;
-      }
-
-      next();
-    } catch (error: unknown) {
-      console.error('Error checking permissions:', error);
-      res.status(500).json({
-        error: 'Failed to verify permissions. Check server logs.',
-      });
-    }
-  };
-}
+import { permissionsService } from '../services/permissions.service';
+import { getAuditReaders } from '../utils/validation';
 
 /**
  * Middleware to require any admin role (super or delegated)
@@ -124,6 +65,42 @@ export async function requireSuperAdmin(
     console.error('Error verifying super admin status:', error);
     res.status(500).json({
       error: 'Failed to verify super admin privileges. Check server logs and SECURITY.md.',
+    });
+  }
+}
+
+/**
+ * Stored results (latest snapshot, waivers, CSV) come from the bucket through
+ * the runtime service account, so Google never checks the caller's privileges.
+ * Super admins may read them. Admins listed in GWS_AUDIT_READERS may too.
+ */
+export async function requireAuditReader(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    if (!req.user?.email) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const adminRole = await permissionsService.getAdminRoles(req.user.email);
+    const isListedReader = getAuditReaders().has(req.user.email.trim().toLowerCase());
+    const isAdmin = adminRole.isSuperAdmin || adminRole.isDelegatedAdmin;
+
+    if (!adminRole.isSuperAdmin && !(isListedReader && isAdmin)) {
+      res.status(403).json({
+        error: 'Super admin privileges required to view stored audit results.',
+      });
+      return;
+    }
+
+    next();
+  } catch (error: unknown) {
+    console.error('Error verifying audit reader status:', error);
+    res.status(500).json({
+      error: 'Failed to verify admin privileges. Check server logs and SECURITY.md.',
     });
   }
 }

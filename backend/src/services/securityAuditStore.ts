@@ -355,14 +355,22 @@ export async function mergeWaivers(
   });
 }
 
-/** One active sign-in per admin. A replaced session id stays valid briefly. */
+/**
+ * One active sign-in per admin. A replaced session id stays valid for a grace
+ * period. Times in seconds except previousSidUntil (milliseconds).
+ * lastActivity moves at most once a minute, so idle checks have that resolution.
+ */
 export interface AdminSessionRecord {
   sid: string;
+  /** When `sid` was issued. Drives timed rotation. */
+  sidIssuedAt: number;
   previousSid?: string;
   previousSidUntil?: number;
   email: string;
   name: string;
   picture?: string;
+  /** OpenID Connect subject from the ID token used to sign in. */
+  sub?: string;
   authTime: number;
   lastActivity: number;
 }
@@ -380,11 +388,13 @@ function normalizeSession(parsed: AdminSessionRecord | null): AdminSessionRecord
   if (typeof parsed.authTime !== 'number' || typeof parsed.lastActivity !== 'number') return null;
   return {
     sid: parsed.sid,
+    sidIssuedAt: typeof parsed.sidIssuedAt === 'number' ? parsed.sidIssuedAt : parsed.authTime,
     previousSid: typeof parsed.previousSid === 'string' ? parsed.previousSid : undefined,
     previousSidUntil: typeof parsed.previousSidUntil === 'number' ? parsed.previousSidUntil : undefined,
     email: parsed.email,
     name: parsed.name,
     picture: typeof parsed.picture === 'string' ? parsed.picture : undefined,
+    sub: typeof parsed.sub === 'string' ? parsed.sub : undefined,
     authTime: parsed.authTime,
     lastActivity: parsed.lastActivity,
   };
@@ -409,9 +419,21 @@ export async function deleteAdminSession(email: string): Promise<void> {
   await remove();
 }
 
+function isRetryableSessionWrite(error: unknown): boolean {
+  const status = httpStatus(error);
+  return status === 412 || status === 429 || (status !== undefined && status >= 500);
+}
+
+/** Jittered exponential delay: 50-100 ms, then 100-200 ms, up to 2 s. */
+function sessionRetryDelayMs(attempt: number): number {
+  const ceiling = Math.min(2000, 100 * 2 ** attempt);
+  return ceiling / 2 + Math.random() * (ceiling / 2);
+}
+
 /**
  * Read-modify-write one admin session. Local disk is serialized in-process.
- * GCS retries when another writer won the race.
+ * GCS retries with backoff on a lost race (412), throttling (429), and 5xx.
+ * Returning the `current` object from `mutate` skips the write.
  */
 export async function updateAdminSession(
   email: string,
@@ -420,7 +442,9 @@ export async function updateAdminSession(
   const object = sessionObject(email);
   const once = async (): Promise<AdminSessionRecord> => {
     const { raw, generation } = await readObjectWithGeneration(object);
-    const next = mutate(normalizeSession(parse<AdminSessionRecord>(raw)));
+    const current = normalizeSession(parse<AdminSessionRecord>(raw));
+    const next = mutate(current);
+    if (next === current) return next;
     await writeObjectConditional(object, JSON.stringify(next), generation);
     return next;
   };
@@ -434,7 +458,8 @@ export async function updateAdminSession(
         return await once();
       } catch (error) {
         lastError = error;
-        if (!bucket || !isPreconditionFailed(error) || attempt === maxAttempts - 1) throw error;
+        if (!bucket || !isRetryableSessionWrite(error) || attempt === maxAttempts - 1) throw error;
+        await new Promise((resolve) => setTimeout(resolve, sessionRetryDelayMs(attempt)));
       }
     }
     throw lastError instanceof Error ? lastError : new Error('Session update conflicted');
