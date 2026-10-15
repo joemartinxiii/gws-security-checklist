@@ -20,7 +20,7 @@ export function weightedScore(checks: ScoreCheck[]): number | null {
   let possible = 0;
   for (const check of checks) {
     if (check.status !== 'pass' && check.status !== 'warning' && check.status !== 'fail') continue;
-    const weight = SEVERITY_WEIGHT[check.severity ?? 'medium'] ?? SEVERITY_WEIGHT.medium;
+    const weight = (check.severity && SEVERITY_WEIGHT[check.severity]) || 1;
     possible += weight;
     if (check.status === 'pass') earned += weight;
     else if (check.status === 'warning') earned += weight / 2;

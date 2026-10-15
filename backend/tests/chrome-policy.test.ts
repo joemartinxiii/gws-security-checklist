@@ -160,6 +160,56 @@ describe('Chrome policy checks', () => {
     expect(byId(checks, 'chrome-allowed-domains')).toMatchObject({ status: 'pass', currentValue: 'Limited to example.com' });
   });
 
+  test('reads the full enum names the API returns', async () => {
+    const checks = await serviceWith(
+      fakeClient(ALL_SCHEMAS, {
+        'chrome.users.RelaunchNotificationWithDurationV2': {
+          relaunchNotificationEnum: 'RELAUNCH_NOTIFICATION_ENUM_REQUIRED',
+        },
+        'chrome.users.SafeBrowsingProtectionLevel': {
+          safeBrowsingProtectionLevel: 'SAFE_BROWSING_PROTECTION_LEVEL_ENUM_STANDARD_PROTECTION',
+          safeBrowsingProtectionLevelCategoryItemPolicyMode: 'POLICY_MODE_ENUM_RECOMMENDED',
+        },
+        'chrome.users.PasswordManager': { passwordManagerEnabled: 'PASSWORD_MANAGER_ENABLED_ENUM_FALSE' },
+        'chrome.users.DownloadRestrictions': {
+          safeBrowsingDownloadRestrictions: 'SAFE_BROWSING_DOWNLOAD_RESTRICTIONS_ENUM_BLOCK_DANGEROUS_DOWNLOAD',
+        },
+        'chrome.users.SecondaryGoogleAccountSignin': {
+          secondaryGoogleAccountSigninAllowed: 'SECONDARY_GOOGLE_ACCOUNT_SIGNIN_ALLOWED_ENUM_TRUE',
+          allowedDomainsForApps: ['example.com'],
+        },
+      })
+    ).getAllPolicyChecks('admin@example.com', 'abc123');
+
+    expect(byId(checks, 'chrome-relaunch-notification').status).toBe('pass');
+    expect(byId(checks, 'chrome-safe-browsing')).toMatchObject({
+      status: 'warning',
+      currentValue: 'Standard protection, users can override',
+    });
+    expect(byId(checks, 'chrome-password-manager').status).toBe('fail');
+    expect(byId(checks, 'chrome-download-restrictions')).toMatchObject({
+      status: 'pass',
+      currentValue: 'Block malicious downloads and dangerous file types',
+    });
+    expect(byId(checks, 'chrome-allowed-domains').status).toBe('pass');
+  });
+
+  test('a domain list passes only when sign-in is limited to those domains', async () => {
+    const run = async (value: Record<string, unknown>) =>
+      byId(
+        await serviceWith(
+          fakeClient(ALL_SCHEMAS, { 'chrome.users.SecondaryGoogleAccountSignin': value })
+        ).getAllPolicyChecks('admin@example.com', 'abc123'),
+        'chrome-allowed-domains'
+      );
+
+    const anyAccount = await run({ secondaryGoogleAccountSigninAllowed: 'UNSET', allowedDomainsForApps: ['example.com'] });
+    expect(anyAccount.status).toBe('warning');
+    const blocked = await run({ secondaryGoogleAccountSigninAllowed: 'FALSE' });
+    expect(blocked.status).toBe('warning');
+    expect(blocked.issues[0]).toMatch(/ChromeOS/);
+  });
+
   test('Safe Browsing off or overridable never passes', async () => {
     const run = async (value: Record<string, unknown>) =>
       byId(

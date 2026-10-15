@@ -39,7 +39,7 @@ export interface HardeningCheck {
   issues?: string[];
 }
 
-/** Static definition of a checklist item, mirroring GWS_HARDENING.md. */
+/** Static definition of a checklist item. CHECKLIST.md lists every item. */
 interface CheckMeta {
   id: string;
   category: string;
@@ -283,8 +283,8 @@ function factorSetLabel(set: string): string {
 export function evaluatePasswordPolicy(value: Record<string, unknown>): EvalResult {
   const strength = readString(value, 'allowedStrength');
   const enforced = readBool(value, 'enforceRequirementsAtLogin') === true;
-  const minRaw = readField(value, 'minimumLength');
-  const min = typeof minRaw === 'number' ? minRaw : undefined;
+  const minRaw = Number(readField(value, 'minimumLength'));
+  const min = Number.isFinite(minRaw) && minRaw > 0 ? minRaw : undefined;
   const isStrong = strength === 'STRONG';
   const longEnough = min !== undefined && min >= 12;
 
@@ -1212,9 +1212,18 @@ export class HardeningService extends WorkspaceService {
         'gmail.comprehensive_mail_storage',
         (value) => {
           const ruleId = readString(value, 'ruleId');
+          const states = readField(snapshot.get('gmail.rule_states').value, 'ruleStates');
+          const turnedOff =
+            !!ruleId &&
+            Array.isArray(states) &&
+            states.some((state) => {
+              const entry = state as Record<string, unknown>;
+              return readString(entry, 'ruleId') === ruleId && readBool(entry, 'enabled') === false;
+            });
+          const on = !!ruleId && !turnedOff;
           return {
-            status: ruleId ? 'pass' : 'warning',
-            currentValue: ruleId ? 'On' : 'Off',
+            status: on ? 'pass' : 'warning',
+            currentValue: on ? 'On' : 'Off',
           };
         },
         { evaluateOnMissing: true }

@@ -555,6 +555,11 @@ describe('password policy', () => {
     expect(evaluatePasswordPolicy({ allowedStrength: 'STRONG', enforceRequirementsAtLogin: true }).status).toBe('warning');
     expect(evaluatePasswordPolicy({ ...base, allowedStrength: 'WEAK' }).status).toBe('fail');
   });
+
+  test('reads a minimum length sent as a string', () => {
+    expect(evaluatePasswordPolicy({ ...base, minimumLength: '14' }).status).toBe('pass');
+    expect(evaluatePasswordPolicy({ ...base, minimumLength: '8' }).currentValue).toMatch(/min length: 8/);
+  });
 });
 
 describe('hardening score', () => {
@@ -687,6 +692,16 @@ describe('Gmail, apps, Drive, Groups, and Chat policy checks', () => {
     const off = svc.emailChecks(snap());
     expect(evalCheck(off, 'gmail-comprehensive-storage').status).toBe('warning');
     expect(evalCheck(off, 'gmail-ip-allowlist').status).toBe('pass');
+  });
+
+  test('gmail-comprehensive-storage is off when its rule is turned off', () => {
+    const checks = svc.emailChecks(
+      snap(
+        policy('gmail.comprehensive_mail_storage', { ruleId: 'abc' }, 'root', 5),
+        policy('gmail.rule_states', { ruleStates: [{ ruleId: 'abc', enabled: false }] }, 'root', 5)
+      )
+    );
+    expect(evalCheck(checks, 'gmail-comprehensive-storage')).toMatchObject({ status: 'warning', currentValue: 'Off' });
   });
 
   test('gmail-spam-bypass reports unauthenticated and domain approved senders', () => {

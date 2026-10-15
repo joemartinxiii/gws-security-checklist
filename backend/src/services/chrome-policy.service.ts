@@ -52,9 +52,14 @@ function field(value: Fields, name: string): unknown {
   return key === undefined ? undefined : value[key];
 }
 
+/**
+ * The API returns full enum names such as
+ * `SAFE_BROWSING_PROTECTION_LEVEL_ENUM_STANDARD_PROTECTION`. Comparisons use
+ * the part after `_ENUM_`, which is also how GAM and the schema docs list them.
+ */
 function enumField(value: Fields, name: string): string | undefined {
   const raw = field(value, name);
-  return typeof raw === 'string' && raw ? raw.toUpperCase() : undefined;
+  return typeof raw === 'string' && raw ? raw.toUpperCase().replace(/^.*_ENUM_/, '') : undefined;
 }
 
 /** Proto JSON drops false, so a missing bool on a set policy reads as false. */
@@ -307,19 +312,22 @@ const POLICIES: PolicySpec[] = [
           issues: ['Users can sign in to Google services with any account, including personal ones.'],
         };
       }
+      const mode = enumField(value, 'secondaryGoogleAccountSigninAllowed');
       const domains = listField(value, 'allowedDomainsForApps');
-      if (domains.length > 0) {
+      if (domains.length > 0 && (mode === 'TRUE' || mode === undefined)) {
         const shown = domains.slice(0, 5).join(', ');
         return {
           status: 'pass',
           currentValue: `Limited to ${shown}${domains.length > 5 ? ` + ${domains.length - 5} more` : ''}`,
         };
       }
-      if (enumField(value, 'secondaryGoogleAccountSigninAllowed') === 'FALSE') {
+      if (mode === 'FALSE') {
         return {
-          status: 'pass',
-          currentValue: 'Secondary account sign-in blocked',
-          issues: ['No domain list is set. Sign-in to secondary accounts is blocked outright instead.'],
+          status: 'warning',
+          currentValue: 'Secondary accounts blocked on ChromeOS only',
+          issues: [
+            'Blocking secondary accounts is a ChromeOS setting. Chrome on Windows, Mac, and Linux is limited only by the allowed domains list.',
+          ],
         };
       }
       return {

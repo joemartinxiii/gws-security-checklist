@@ -61,7 +61,7 @@ const STATIC_SORT = { key: '_', direction: 'asc' as const };
 const noopSort = () => {};
 const LU = 1.75;
 
-/** Same section order as backend / GWS_HARDENING.md */
+/** Same section order as the backend and CHECKLIST.md */
 const HARDENING_CATEGORY_ORDER = [
   'Administrator Accounts',
   'Authentication',
@@ -952,12 +952,14 @@ export function SecurityAudit() {
         'Cloud Identity Policy API unavailable — policy-backed checks need manual review until access is restored.'
       : null;
 
-  const policyWarnings = [
-    ...(hardeningData?.policyApi?.partial && !hardeningData.policyApi.warnings?.length
-      ? ['Some policy data could not be read. Affected checks need manual review.']
-      : []),
-    ...(hardeningData?.policyApi?.warnings ?? []),
-  ];
+  const policyWarnings = Array.from(
+    new Set([
+      ...(hardeningData?.policyApi?.partial && !hardeningData.policyApi.warnings?.length
+        ? ['Some policy data could not be read. Affected checks need manual review.']
+        : []),
+      ...(hardeningData?.policyApi?.warnings ?? []),
+    ])
+  );
 
   return (
     <>
