@@ -47,9 +47,22 @@ export function ListDataRow({
   selected?: boolean;
   onClick?: () => void;
 }) {
+  const onKeyDown = onClick
+    ? (event: React.KeyboardEvent) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onClick();
+        }
+      }
+    : undefined;
+
   return (
     <Box
       onClick={onClick}
+      onKeyDown={onKeyDown}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
       sx={(theme: Theme) => ({
         ...rowBase,
         py: 1.125,
@@ -61,6 +74,10 @@ export function ListDataRow({
           bgcolor: selected
             ? pick(theme, T.accentSoft, 'rgba(26, 115, 232, 0.16)')
             : pick(theme, T.surfaceHover, '#27272a'),
+        },
+        '&:focus-visible': {
+          outline: `2px solid ${theme.palette.primary.main}`,
+          outlineOffset: -2,
         },
       })}
     >
