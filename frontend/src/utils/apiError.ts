@@ -7,12 +7,10 @@ interface ApiErrorBody {
 }
 
 /**
- * Produce a user-facing message from an API/network error.
+ * Produce a user-facing message from an API or network error.
  *
- * Prefers the backend's `error` message (and appends its actionable `hint`
- * when present), with sensible defaults for the common auth/permission and
- * network failure modes. Promoted from the ad-hoc helper that previously lived
- * only in Users.tsx so every page surfaces errors consistently.
+ * Prefers the backend's `error` message and appends its `hint` when present.
+ * Falls back to defaults for 401, 403, 404, 429, and network failures.
  */
 export function getApiErrorMessage(e: unknown, fallback = 'Something went wrong. Please try again.'): string {
   const err = e as AxiosError<ApiErrorBody>;

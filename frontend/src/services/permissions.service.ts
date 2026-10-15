@@ -1,3 +1,4 @@
+import { isAxiosError } from 'axios';
 import { apiClient } from './api.client';
 
 export type Permission = 'audit.view' | 'audit.export';
@@ -36,9 +37,11 @@ class PermissionsService {
       this.loadError = null;
 
       return { ...response.data, error: null };
-    } catch (error: any) {
-      const errorMsg = error.response?.data?.error || error.message || 'Unknown error';
-      const hint = error.response?.data?.hint;
+    } catch (error: unknown) {
+      const body = isAxiosError<{ error?: string; hint?: string }>(error) ? error.response?.data : undefined;
+      const errorMsg =
+        body?.error || (error instanceof Error ? error.message : undefined) || 'Unknown error';
+      const hint = body?.hint;
       console.error('Error fetching permissions:', errorMsg);
       this.permissions = [];
       this.isSuperAdmin = false;
