@@ -1,0 +1,15 @@
+# Build config for scripts/deploy.sh.
+#
+# deploy.sh runs the build as the user-specified service account
+# security-checklist-deploy-sa. Cloud Build requires a logging choice for
+# user-specified service accounts. This file sends build logs to Cloud Logging
+# only, so the account needs no log bucket.
+#
+# Substitution _IMAGE is the full Artifact Registry image path and tag.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '--tag', '${_IMAGE}', '.']
+images:
+  - '${_IMAGE}'
+options:
+  logging: CLOUD_LOGGING_ONLY
