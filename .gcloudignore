@@ -1,0 +1,43 @@
+# Files that `gcloud builds submit` does not upload to Cloud Build.
+# Without this file, gcloud falls back to .gitignore, which can miss local files.
+# The upload keeps Dockerfile, .dockerignore, cloudbuild.yaml, and the sources.
+
+.git
+.gitignore
+.gcloudignore
+
+# Dependencies and build output (the Dockerfile rebuilds both)
+node_modules/
+**/node_modules/
+**/dist/
+
+# Secrets and local environment files. Keep .env.example.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*-key.json
+service-account*.json
+
+# Test output
+coverage/
+**/coverage/
+test-results/
+playwright-report/
+playwright/.cache/
+tests/e2e/.auth/
+tests/e2e/.fixtures/
+
+# Local data and editor files
+backend/data/
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+# Private session files
+/todos.md
+/tech-debt.md
+/docs/session/

@@ -1,4 +1,5 @@
-FROM node:24-slim AS builder
+# Pinned by digest. Dependabot (docker) proposes updates.
+FROM node:24-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 AS builder
 
 WORKDIR /app
 
@@ -18,7 +19,7 @@ COPY . .
 ENV VITE_USE_MSW=false
 RUN npm run build
 
-FROM node:24-slim
+FROM node:24-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
 
 WORKDIR /app
 
@@ -33,7 +34,8 @@ COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/
 COPY frontend/package.json ./frontend/
 
-RUN npm ci --omit=dev --ignore-scripts
+# Backend production dependencies only. The frontend is already built into frontend/dist.
+RUN npm ci -w backend --omit=dev --ignore-scripts
 
 COPY --from=builder /app/frontend/dist ./frontend/dist
 COPY --from=builder /app/backend/dist ./backend/dist

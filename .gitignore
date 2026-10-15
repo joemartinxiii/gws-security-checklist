@@ -24,11 +24,8 @@ backend/data/
 
 # Environment variables
 .env
-.env.test
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
 
 # IDE
 .vscode/
