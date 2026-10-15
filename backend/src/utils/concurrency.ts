@@ -1,8 +1,8 @@
 /**
  * Map over items with a bounded concurrency limit, preserving input order in
- * the result. Used to parallelize per-item Google API calls (e.g. per-group
- * member scans, per-user delegation scans) without issuing thousands of
- * simultaneous requests that would trip rate limits or exhaust sockets.
+ * the result. Use it to run per-item Google API calls in parallel without
+ * sending thousands of simultaneous requests that trip rate limits or exhaust
+ * sockets.
  */
 export async function mapWithConcurrency<T, R>(
   items: T[],

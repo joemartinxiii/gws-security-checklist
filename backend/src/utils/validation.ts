@@ -34,7 +34,7 @@ export function validateDomain(domain: string): { valid: boolean; error?: string
 
 /**
  * Domains permitted for this install: WORKSPACE_DOMAIN plus GWS_ALLOWED_DOMAINS.
- * Used for login, external-share classification, and mutation gates.
+ * Used for the login gate.
  */
 export function getAllowedDomains(): string[] {
   const domains = new Set<string>();
@@ -45,19 +45,6 @@ export function getAllowedDomains(): string[] {
     if (trimmed) domains.add(trimmed);
   }
   return Array.from(domains);
-}
-
-/**
- * Allowlist for checks when env may be empty (unit tests): fall back to a
- * single domain derived from `fallbackEmail` so same-domain ops still work.
- */
-function allowedDomainsWithFallback(fallbackEmail?: string): string[] {
-  const allowed = getAllowedDomains();
-  if (allowed.length > 0) return allowed;
-  const fb = String(fallbackEmail || '')
-    .split('@')[1]
-    ?.toLowerCase();
-  return fb ? [fb] : [];
 }
 
 /**
@@ -84,72 +71,41 @@ export function isDomainAllowed(domain: string): boolean {
   return allowed.includes(d);
 }
 
-/**
- * Format + allowlist check for mutation targets (create user, add member, etc.).
- * Fail closed when allowlist is empty (misconfigured production).
- */
-export function requireAllowedEmail(email: string): { valid: boolean; error?: string } {
-  const format = validateEmail(email);
-  if (!format.valid) return format;
-  if (!isEmailInAllowedDomain(email)) {
-    const allowed = getAllowedDomains();
-    return {
-      valid: false,
-      error:
-        allowed.length === 0
-          ? 'Domain allowlist is not configured (WORKSPACE_DOMAIN / GWS_ALLOWED_DOMAINS).'
-          : `Email domain is not in the allowed domain list. Allowed: ${allowed.join(', ')}`,
-    };
-  }
-  return { valid: true };
-}
-
 /** True if two emails are the same mailbox (case-insensitive). */
 export function emailsEqual(a: string, b: string): boolean {
   return String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
 }
 
 /**
- * Both parties for delegation should be on the org allowlist (or same domain
- * when env is unset in tests).
+ * GWS_AUDIT_READERS: exact email addresses (comma-separated, case-insensitive)
+ * that may read stored audit results without being super admins.
  */
-export function validateDelegationDomain(
-  userEmail: string,
-  delegateEmail: string
-): { valid: boolean; error?: string } {
-  const userCheck = validateEmail(userEmail);
-  if (!userCheck.valid) return userCheck;
-  const delegateCheck = validateEmail(delegateEmail);
-  if (!delegateCheck.valid) return delegateCheck;
-
-  const allowed = allowedDomainsWithFallback(userEmail);
-  const userDomain = userEmail.split('@')[1]?.toLowerCase();
-  const delegateDomain = delegateEmail.split('@')[1]?.toLowerCase();
-
-  if (!userDomain || !allowed.includes(userDomain)) {
-    return {
-      valid: false,
-      error: `User domain '${userDomain || '?'}' not allowed. Allowed domains: ${allowed.join(', ')}`,
-    };
+export function getAuditReaders(): Set<string> {
+  const readers = new Set<string>();
+  for (const entry of process.env.GWS_AUDIT_READERS?.split(',') || []) {
+    const email = entry.trim().toLowerCase();
+    if (email) readers.add(email);
   }
-  if (!delegateDomain || !allowed.includes(delegateDomain)) {
-    return {
-      valid: false,
-      error: `Delegate domain '${delegateDomain || '?'}' not allowed. Allowed domains: ${allowed.join(', ')}`,
-    };
-  }
-
-  return { valid: true };
+  return readers;
 }
 
-export function sanitizeText(text: string): string {
-  if (!text || typeof text !== 'string') return '';
+export const WAIVER_CHECK_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,79}$/;
+export const WAIVER_REASON_MAX_LENGTH = 1000;
 
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;')
-    .replace(/\//g, '&#x2F;');
+/** Normalize and validate a waiver. Returns the trimmed reason or an error message. */
+export function validateWaiver(
+  checkId: unknown,
+  reason: unknown
+): { reason: string } | { error: string } {
+  if (typeof checkId !== 'string' || !WAIVER_CHECK_ID_PATTERN.test(checkId)) {
+    return { error: 'checkId must be lowercase letters, digits, and hyphens (80 characters max)' };
+  }
+  const trimmed = typeof reason === 'string' ? reason.trim() : '';
+  if (!trimmed) {
+    return { error: 'reason is required' };
+  }
+  if (trimmed.length > WAIVER_REASON_MAX_LENGTH) {
+    return { error: `reason must be ${WAIVER_REASON_MAX_LENGTH} characters or fewer` };
+  }
+  return { reason: trimmed };
 }

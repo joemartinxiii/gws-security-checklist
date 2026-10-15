@@ -1,17 +1,7 @@
 import { Box } from '@mui/material';
 import type { Theme } from '@mui/material/styles';
 import { T, pick } from '../../theme/designTokens';
-
-/** Outer bordered container for flex-based data lists */
-export function listShellSx(theme: Theme) {
-  return {
-    border: `1px solid ${pick(theme, T.border, '#3f3f46')}`,
-    borderRadius: T.radiusLg,
-    overflowX: 'hidden' as const,
-    overflowY: 'hidden' as const,
-    bgcolor: pick(theme, T.surface, '#18181b'),
-  };
-}
+import { listShellSx } from './listShellStyles';
 
 export function ListShell({ children }: { children: React.ReactNode }) {
   return (
@@ -57,9 +47,22 @@ export function ListDataRow({
   selected?: boolean;
   onClick?: () => void;
 }) {
+  const onKeyDown = onClick
+    ? (event: React.KeyboardEvent) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onClick();
+        }
+      }
+    : undefined;
+
   return (
     <Box
       onClick={onClick}
+      onKeyDown={onKeyDown}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
       sx={(theme: Theme) => ({
         ...rowBase,
         py: 1.125,
@@ -72,62 +75,13 @@ export function ListDataRow({
             ? pick(theme, T.accentSoft, 'rgba(26, 115, 232, 0.16)')
             : pick(theme, T.surfaceHover, '#27272a'),
         },
+        '&:focus-visible': {
+          outline: `2px solid ${theme.palette.primary.main}`,
+          outlineOffset: -2,
+        },
       })}
     >
       {children}
     </Box>
   );
 }
-
-/**
- * Leading checkbox column — identical structure in header and every data row
- * (including empty spacer for non-selectable rows) so cells stay aligned.
- */
-export const listCheckboxSx = {
-  width: 40,
-  minWidth: 40,
-  flex: '0 0 40px',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'flex-start',
-} as const;
-
-/**
- * Pin the first trailing fixed column (and everything after it) to the right
- * edge of the row. Required when data columns use fixed/resizable widths so
- * Actions does not sit mid-row with empty space after it.
- */
-export const listPinEndSx = {
-  marginLeft: 'auto',
-} as const;
-
-/**
- * Trailing actions — fixed width, always flush right of the row.
- * Keep in sync with header `__open` / chevron ColumnHeader (36px).
- */
-export const listActionsSx = {
-  width: 36,
-  minWidth: 36,
-  flex: '0 0 36px',
-  marginLeft: 'auto',
-  display: 'flex',
-  justifyContent: 'flex-end',
-  alignItems: 'center',
-  gap: 0.25,
-} as const;
-
-/** Flexible text column. Use grow weights so columns share width evenly. */
-export function listGrowSx(grow = 1, minWidth = 120): {
-  flex: string;
-  minWidth: number;
-  overflow: 'hidden';
-} {
-  return {
-    flex: `${grow} 1 0px`,
-    minWidth,
-    overflow: 'hidden',
-  };
-}
-
-/** @deprecated prefer listGrowSx(1) — kept for imports */
-export const listPrimaryColSx = listGrowSx(1, 120);

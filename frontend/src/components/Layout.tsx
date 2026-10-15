@@ -19,7 +19,7 @@ import { ThemeProvider as MuiThemeProviderNested } from '@mui/material/styles';
 import { Shield, LogOut, Sun, Moon } from 'lucide-react';
 import { authService } from '../services/auth.service';
 import { usePermissions } from '../hooks/usePermissions';
-import { ThemeContext } from '../App';
+import { ThemeContext } from '../theme/ThemeContext';
 import { T, pick, textSecondary, PAGE_MAX_WIDTH } from '../theme/designTokens';
 import { FontLinks } from './FontLinks';
 

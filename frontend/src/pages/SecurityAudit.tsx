@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { isAxiosError } from 'axios';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -41,6 +42,13 @@ import { ExportMenuRow } from '../components/ExportButton';
 import { ActionTooltip } from '../components/ActionTooltip';
 import { getApiErrorMessage } from '../utils/apiError';
 import { hardeningChecksToCsv } from '../utils/checklistCsv';
+import { safeAdminConsoleUrl } from '../utils/adminUrl';
+import {
+  computeChecklistScore,
+  PLAIN_SCORE_NOTE,
+  WEIGHTED_SCORE_LABEL,
+  WEIGHTED_SCORE_NOTE,
+} from '../utils/score';
 import { ColumnHeader } from '../components/ui/ColumnHeader';
 import { ListShell, ListHeaderRow, ListDataRow } from '../components/ui/ListShell';
 import { DotLabel } from '../components/StatusDot';
@@ -54,14 +62,18 @@ const STATIC_SORT = { key: '_', direction: 'asc' as const };
 const noopSort = () => {};
 const LU = 1.75;
 
-/** Same section order as backend / GWS_HARDENING.md */
+/** Same section order as the backend and CHECKLIST.md */
 const HARDENING_CATEGORY_ORDER = [
+  'Administrator Accounts',
   'Authentication',
   'Email',
   'Advanced Phishing & Malware',
   'Calendar',
   'Google Drive',
-  'Chrome Managed Browsers',
+  'Groups',
+  'Chat',
+  'Chrome Browser',
+  'Alerts',
   'Login Challenges',
   'Data Download',
   'Apps Control',
@@ -91,18 +103,26 @@ function orderedHardeningCategories(categories: string[]): string[] {
 const LEGACY_IGNORED_KEY = 'gws-hardening-ignored-ids';
 const LEGACY_REASONS_KEY = 'gws-hardening-waive-reasons';
 const LEGACY_MIGRATED_KEY = 'gws-hardening-waivers-migrated';
+const WAIVER_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,79}$/;
+const WAIVER_REASON_MAX = 1000;
+const LEGACY_REASON_FALLBACK = 'Imported from browser (no reason given)';
 
 function loadLegacyLocalWaivers(): Record<string, string> {
   try {
     const idsRaw = localStorage.getItem(LEGACY_IGNORED_KEY);
     const reasonsRaw = localStorage.getItem(LEGACY_REASONS_KEY);
-    const ids: string[] = idsRaw ? JSON.parse(idsRaw) : [];
-    const reasons: Record<string, string> =
-      reasonsRaw && typeof JSON.parse(reasonsRaw) === 'object' ? JSON.parse(reasonsRaw) : {};
+    const ids: unknown = idsRaw ? JSON.parse(idsRaw) : [];
+    const parsedReasons: unknown = reasonsRaw ? JSON.parse(reasonsRaw) : {};
+    const reasons =
+      parsedReasons && typeof parsedReasons === 'object' && !Array.isArray(parsedReasons)
+        ? (parsedReasons as Record<string, unknown>)
+        : {};
     const out: Record<string, string> = {};
     if (Array.isArray(ids)) {
       for (const id of ids) {
-        if (typeof id === 'string') out[id] = typeof reasons[id] === 'string' ? reasons[id] : '';
+        if (typeof id !== 'string' || !WAIVER_ID_PATTERN.test(id)) continue;
+        const raw = typeof reasons[id] === 'string' ? reasons[id].trim() : '';
+        out[id] = (raw || LEGACY_REASON_FALLBACK).slice(0, WAIVER_REASON_MAX);
       }
     }
     return out;
@@ -151,6 +171,8 @@ interface PolicyApiMeta {
   available: boolean;
   code?: string;
   message?: string;
+  warnings?: string[];
+  partial?: boolean;
 }
 
 interface HardeningPayload {
@@ -166,6 +188,7 @@ interface HardeningPayload {
     fail: number;
     manual: number;
     info: number;
+    score?: number | null;
   };
   policyApi: PolicyApiMeta;
   waivers: Record<string, WaiverEntry>;
@@ -212,9 +235,7 @@ function exportSecurityAuditToPdf(
     info: activeChecks.filter((c) => c.status === 'info').length,
   };
   const waivedCount = hardeningData.checks.filter((c) => ignoredIds.has(c.id)).length;
-  const graded = stats.pass + stats.warning + stats.fail;
-  const denom = graded > 0 ? graded : 1;
-  const pctPass = Math.round((stats.pass / denom) * 100);
+  const score = computeChecklistScore(activeChecks, hardeningData.statistics, waivedCount);
 
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   const pageW = doc.internal.pageSize.getWidth();
@@ -249,11 +270,17 @@ function exportSecurityAuditToPdf(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(22);
   doc.setTextColor(26, 115, 232);
-  doc.text(`${pctPass}%`, PDF_MARGIN + 4, summaryTop + 11);
+  doc.text(`${score.value}%`, PDF_MARGIN + 4, summaryTop + 11);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
   doc.setTextColor(110, 110, 110);
-  doc.text('of graded checks pass automated verification', PDF_MARGIN + 4, summaryTop + 17);
+  doc.text(
+    score.weighted
+      ? `${WEIGHTED_SCORE_LABEL}. Warnings count half.`
+      : 'of graded checks pass automated verification',
+    PDF_MARGIN + 4,
+    summaryTop + 17
+  );
 
   const statParts = [
     `Pass ${stats.pass}`,
@@ -478,6 +505,7 @@ export function SecurityAudit() {
   const [bootLoading, setBootLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [storedResultsDenied, setStoredResultsDenied] = useState(false);
   const [hardeningData, setHardeningData] = useState<HardeningData | null>(null);
   const [waivers, setWaivers] = useState<Record<string, WaiverEntry>>({});
   const [exportAnchorEl, setExportAnchorEl] = useState<null | HTMLElement>(null);
@@ -537,10 +565,18 @@ export function SecurityAudit() {
             // Delegate or API failure — leave local alone for a super to import later.
           }
         }
+        setStoredResultsDenied(false);
         setLoadError(null);
       } catch (error) {
         if (!cancelled) {
-          setLoadError(getApiErrorMessage(error, 'Failed to load security audit'));
+          if (isAxiosError(error) && error.response?.status === 403) {
+            setStoredResultsDenied(true);
+            setLoadError(null);
+            setHardeningData(null);
+          } else {
+            setStoredResultsDenied(false);
+            setLoadError(getApiErrorMessage(error, 'Failed to load security audit'));
+          }
         }
       } finally {
         if (!cancelled) setBootLoading(false);
@@ -558,6 +594,7 @@ export function SecurityAudit() {
     }
     try {
       setRunning(true);
+      setStoredResultsDenied(false);
       setLoadError(null);
       const response = await apiClient.post<HardeningPayload>('/audit/hardening/run');
       applyPayload(response.data, setHardeningData, setWaivers, setLastRunAt, setTriggeredBy);
@@ -627,9 +664,13 @@ export function SecurityAudit() {
 
   const handleExportDrive = async () => {
     setExportAnchorEl(null);
+    if (!canTakeAction) {
+      showSnackbar('Only super admins can save the checklist to Drive.', 'info');
+      return;
+    }
     try {
       const response = await apiClient.post('/audit/hardening/export/drive');
-      if (response.data?.webViewLink) window.open(response.data.webViewLink, '_blank');
+      if (response.data?.webViewLink) window.open(response.data.webViewLink, '_blank', 'noopener,noreferrer');
       showSnackbar('Saved to Google Drive.');
     } catch (err: unknown) {
       console.error(err);
@@ -686,20 +727,27 @@ export function SecurityAudit() {
   }, []);
 
   const applyWaive = useCallback(
-    async (checkId: string, reason: string) => {
+    async (checkId: string, reason: string): Promise<boolean> => {
+      const trimmed = reason.trim();
+      if (!trimmed) {
+        showSnackbar('A waiver needs a reason.', 'info');
+        return false;
+      }
       if (!canTakeAction) {
         showSnackbar('Only super admins can change waivers.', 'info');
-        return;
+        return false;
       }
       try {
         setWaiveBusy(true);
         const res = await apiClient.put(`/audit/hardening/waivers/${encodeURIComponent(checkId)}`, {
-          reason: reason.trim(),
+          reason: trimmed,
         });
         setWaivers(res.data.waivers || {});
         showSnackbar('Waiver saved for the organization.');
+        return true;
       } catch (err) {
         showSnackbar(getApiErrorMessage(err, 'Failed to save waiver.'), 'error');
+        return false;
       } finally {
         setWaiveBusy(false);
       }
@@ -915,6 +963,7 @@ export function SecurityAudit() {
       : detailCheckId
         ? ignoredChecks.find((c) => c.id === detailCheckId) ?? null
         : null;
+  const detailAdminUrl = safeAdminConsoleUrl(detailCheck?.adminConsoleUrl);
   const detailWaived = detailCheck ? ignoredIds.has(detailCheck.id) : false;
   const detailStatusColor = (status: HardeningCheck['status']) =>
     status === 'pass'
@@ -933,6 +982,15 @@ export function SecurityAudit() {
         'Cloud Identity Policy API unavailable — policy-backed checks need manual review until access is restored.'
       : null;
 
+  const policyWarnings = Array.from(
+    new Set([
+      ...(hardeningData?.policyApi?.partial && !hardeningData.policyApi.warnings?.length
+        ? ['Some policy data could not be read. Affected checks need manual review.']
+        : []),
+      ...(hardeningData?.policyApi?.warnings ?? []),
+    ])
+  );
+
   return (
     <>
       <Box sx={{ fontFamily: T.font }}>
@@ -940,7 +998,7 @@ export function SecurityAudit() {
           title="Security Checklist"
           lede={
             hardeningData
-              ? 'Workspace security checklist for client reviews. Compliance score uses graded checks only (info, manual, and waived excluded).'
+              ? 'Workspace security checklist for client reviews. The score uses graded checks only (info, manual, and waived excluded).'
               : 'Workspace security checklist for client reviews. Run once to capture a snapshot you can export and discuss.'
           }
           status={
@@ -1029,7 +1087,12 @@ export function SecurityAudit() {
               ? (() => {
                   const s = activeStats;
                   const denom = s.pass + s.warning + s.fail;
-                  const pctPass = denom === 0 ? 0 : Math.round((s.pass / denom) * 100);
+                  const score = computeChecklistScore(
+                    activeChecks,
+                    hardeningData.statistics,
+                    hardeningData.checks.length - activeChecks.length
+                  );
+                  const pctPass = score.value;
                   const headlineColor = pctPass >= 80 ? T.success : pctPass >= 50 ? T.accent : T.warning;
                   const pctOfGraded = (n: number) => (denom === 0 ? 0 : Math.round((n / denom) * 100));
                   return (
@@ -1056,7 +1119,7 @@ export function SecurityAudit() {
                         <ScoreRing
                           value={pctPass}
                           color={headlineColor}
-                          caption="Compliance"
+                          caption={score.weighted ? WEIGHTED_SCORE_LABEL : 'Compliance'}
                           sizeVariant="lg"
                         />
                         <Box
@@ -1125,7 +1188,7 @@ export function SecurityAudit() {
                       </Box>
                       <Box>
                         <Typography sx={{ fontFamily: T.font, fontSize: '0.8125rem', color: (t) => textSecondary(t) }}>
-                          Graded checks only — info and manual excluded from the compliance score.
+                          {score.weighted ? WEIGHTED_SCORE_NOTE : PLAIN_SCORE_NOTE}
                         </Typography>
                         {ignoredCount > 0 && (
                           <Typography
@@ -1184,6 +1247,7 @@ export function SecurityAudit() {
                     label="Export to Drive"
                     icon={<CloudUpload size={16} strokeWidth={LU} />}
                     onClick={handleExportDrive}
+                    disabled={!canTakeAction}
                   />
                   <ExportMenuRow
                     label="Export to PDF"
@@ -1199,6 +1263,23 @@ export function SecurityAudit() {
           </Alert>
         )}
 
+        {policyWarnings.length > 0 && !running && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            <Box component="ul" sx={{ m: 0, pl: 2.25 }}>
+              {policyWarnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </Box>
+          </Alert>
+        )}
+
+        {storedResultsDenied && !running && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            Stored checklist results are for super admins. A super admin can add your address to
+            GWS_AUDIT_READERS.
+          </Alert>
+        )}
+
         {loadError && !running && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setLoadError(null)}>
             {loadError}
@@ -1209,7 +1290,7 @@ export function SecurityAudit() {
           <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
             <CircularProgress />
           </Box>
-        ) : hardeningData ? (
+        ) : storedResultsDenied ? null : hardeningData ? (
           <>
             <Box sx={(th) => ({ ...dialogTabRowSx(th), mb: 2.5 })}>
               {AUDIT_TABS.map((label, idx) => (
@@ -1810,6 +1891,7 @@ export function SecurityAudit() {
                     </Typography>
                     <TextField
                       autoFocus
+                      required
                       fullWidth
                       multiline
                       minRows={2}
@@ -1817,16 +1899,21 @@ export function SecurityAudit() {
                       placeholder="e.g. Client accepted residual risk — partner domain allowlist required for ops"
                       value={reasonDraft}
                       onChange={(e) => setReasonDraft(e.target.value)}
+                      inputProps={{ maxLength: WAIVER_REASON_MAX }}
+                      helperText={
+                        reasonDraft.trim()
+                          ? `${reasonDraft.trim().length} / ${WAIVER_REASON_MAX}`
+                          : 'A reason is required.'
+                      }
                       sx={{ mb: 1.5, fontFamily: T.font }}
                     />
                     <Box sx={{ display: 'flex', gap: 1 }}>
                       <Button
                         size="small"
                         variant="contained"
-                        disabled={waiveBusy}
+                        disabled={waiveBusy || !reasonDraft.trim()}
                         onClick={async () => {
-                          await applyWaive(detailCheck.id, reasonDraft);
-                          setReasonEditing(false);
+                          if (await applyWaive(detailCheck.id, reasonDraft)) setReasonEditing(false);
                         }}
                         sx={(th) => dialogPrimaryButtonSx(th)}
                       >
@@ -1861,16 +1948,16 @@ export function SecurityAudit() {
               </Box>
             </DialogContent>
             <DialogActions sx={(th) => dialogActionsSx(th)}>
-              {detailCheck.adminConsoleUrl && (
+              {detailAdminUrl && (
                 <Button
                   size="small"
                   startIcon={<ExternalLink size={15} strokeWidth={1.75} />}
-                  href={detailCheck.adminConsoleUrl}
+                  href={detailAdminUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   sx={(th) => dialogSecondaryButtonSx(th)}
                 >
-                  Open Admin guide
+                  Open in Admin console
                 </Button>
               )}
               {detailCheck.id === '2fa-enforcement' && (
@@ -1894,10 +1981,9 @@ export function SecurityAudit() {
                 <Button
                   size="small"
                   variant="contained"
-                  disabled={waiveBusy || !canTakeAction}
+                  disabled={waiveBusy || !canTakeAction || !reasonDraft.trim()}
                   onClick={async () => {
-                    await applyWaive(detailCheck.id, reasonDraft);
-                    setReasonEditing(false);
+                    if (await applyWaive(detailCheck.id, reasonDraft)) setReasonEditing(false);
                   }}
                   sx={(th) => dialogPrimaryButtonSx(th)}
                 >

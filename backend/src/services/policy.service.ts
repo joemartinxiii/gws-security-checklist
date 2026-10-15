@@ -1,4 +1,6 @@
+import { isDeepStrictEqual } from 'util';
 import { getDelegatedAccessToken } from '../config/google.config';
+import { parseRetryAfterMs } from '../utils/retryAfter';
 
 /**
  * Thin wrapper around the Cloud Identity Policy API (`policies.list`).
@@ -24,12 +26,39 @@ const INTER_PAGE_DELAY_MS = 150;
 /** Retries for transient 429 / 5xx (exponential backoff + Retry-After). */
 const MAX_FETCH_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 800;
+/** Stop paging a policy list that never ends. */
+const MAX_POLICY_PAGES = 200;
+
+/**
+ * Settings whose fields are reduced one by one: each field comes from the
+ * greatest-sortOrder policy that has it. Every other setting takes all of its
+ * fields from the greatest-sortOrder policy. Source: Policy API concepts,
+ * "Reducers for settings".
+ */
+const MERGE_REDUCER_SETTINGS = new Set([
+  'api_controls.unconfigured_third_party_apps',
+  'calendar.interoperability',
+  'calendar.primary_calendar_max_allowed_external_sharing',
+  'calendar.secondary_calendar_max_allowed_external_sharing',
+  'chat.chat_history',
+  'chat.external_chat_restriction',
+  'drive_and_docs.drive_sdk',
+  'gmail.email_image_proxy_bypass',
+  'gmail.imap_access',
+  'gmail.mail_delegation',
+  'gmail.name_format',
+  'groups_for_business.groups_sharing',
+  'security.less_secure_apps',
+  'security.super_admin_account_recovery',
+  'security.user_account_recovery',
+  'workspace_marketplace.apps_access_options',
+]);
 
 interface RawPolicyQuery {
   query?: string;
   orgUnit?: string;
   group?: string;
-  sortOrder?: number;
+  sortOrder?: number | string;
 }
 
 interface RawPolicy {
@@ -74,17 +103,9 @@ async function fetchPoliciesPage(
       const retryable = resp.status === 429 || resp.status >= 500;
 
       if (retryable && attempt < MAX_FETCH_ATTEMPTS - 1) {
-        const retryAfterHdr = resp.headers.get('retry-after');
-        let waitMs = BASE_BACKOFF_MS * Math.pow(2, attempt);
-        if (retryAfterHdr) {
-          const asInt = parseInt(retryAfterHdr, 10);
-          if (!Number.isNaN(asInt) && asInt > 0) {
-            // Header may be seconds or an HTTP-date; prefer seconds when numeric.
-            waitMs = asInt < 1000 ? asInt * 1000 : asInt;
-          }
-        }
+        const headerWait = parseRetryAfterMs(resp.headers.get('retry-after'));
         // Cap single wait so Cloud Run request doesn't hang forever.
-        waitMs = Math.min(waitMs, 15_000);
+        const waitMs = Math.min(headerWait ?? BASE_BACKOFF_MS * Math.pow(2, attempt), 15_000);
         console.warn(
           `Cloud Identity Policy API HTTP ${resp.status} (attempt ${attempt + 1}/${MAX_FETCH_ATTEMPTS}); retrying in ${waitMs}ms`
         );
@@ -124,27 +145,84 @@ export interface PolicyLookup {
   /** The setting value object (camelCase fields), or null when not found. */
   value: Record<string, unknown> | null;
   /**
-   * Number of distinct organization-unit-scoped policies found for this type.
-   * When > 1 the setting is overridden per-OU. The returned value is the
-   * top-level org unit. Callers should say how many other scopes differ.
+   * Number of other org units or groups whose admin policy differs from
+   * `value`. Zero when every other scope matches the root or has no policy.
    */
-  scopeCount: number;
+  overrideCount: number;
+  /** True when `value` comes only from policies limited to certain licenses. */
+  licenseConditional: boolean;
 }
 
-/**
- * Lower numbers sort first. A policy with no org unit is customer-wide.
- * Among org units, a higher Google sortOrder is the broader unit.
- */
-function policyBreadth(policy: RawPolicy): number {
-  if (!policy.policyQuery?.orgUnit && !policy.policyQuery?.group) return -1_000_000;
-  const sort = policy.policyQuery?.sortOrder ?? 0;
-  return -sort;
+/** An org unit or group that sets its own value for a setting. */
+export interface PolicyScope {
+  kind: 'orgUnit' | 'group';
+  id: string;
+  value: Record<string, unknown>;
 }
+
+interface SnapshotMeta {
+  /** True when the policy list was cut off before the last page. */
+  partial?: boolean;
+  warnings?: string[];
+}
+
+const ROOT_UNKNOWN_WARNING =
+  'The top-level org unit could not be identified from the policy list, so org-wide values may reflect an override on a child org unit.';
 
 /** Strip the leading `settings/` from a setting type identifier. */
 function normalizeType(type?: string): string {
   if (!type) return '';
   return type.startsWith('settings/') ? type.slice('settings/'.length) : type;
+}
+
+function sortOrderOf(policy: RawPolicy): number {
+  const n = Number(policy.policyQuery?.sortOrder ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Org unit ID without the `orgUnits/` prefix, or null for a customer-wide policy. */
+function bareOrgUnit(policy: RawPolicy): string | null {
+  const orgUnit = policy.policyQuery?.orgUnit;
+  return orgUnit ? orgUnit.replace(/^orgUnits\//, '') : null;
+}
+
+function isLicenseScoped(policy: RawPolicy): boolean {
+  return /entity\.licenses/.test(policy.policyQuery?.query ?? '');
+}
+
+/** Ascending precedence: a greater sortOrder wins, and ADMIN wins a tie. */
+function byPrecedence(a: RawPolicy, b: RawPolicy): number {
+  const diff = sortOrderOf(a) - sortOrderOf(b);
+  if (diff !== 0) return diff;
+  return Number(a.type === 'ADMIN') - Number(b.type === 'ADMIN');
+}
+
+function reduceValues(settingType: string, ascending: RawPolicy[]): Record<string, unknown> {
+  if (!MERGE_REDUCER_SETTINGS.has(settingType)) {
+    return ascending[ascending.length - 1].setting?.value ?? {};
+  }
+  const merged: Record<string, unknown> = {};
+  for (const policy of ascending) {
+    for (const [field, next] of Object.entries(policy.setting?.value ?? {})) {
+      const previous = merged[field];
+      merged[field] = Array.isArray(previous) && Array.isArray(next) ? [...previous, ...next] : next;
+    }
+  }
+  return merged;
+}
+
+/** The root OU is the one Google attaches its SYSTEM defaults to. */
+function deriveRootOrgUnit(policies: RawPolicy[]): string | null {
+  const counts = new Map<string, number>();
+  for (const policy of policies) {
+    if (policy.type !== 'SYSTEM' || policy.policyQuery?.group) continue;
+    const orgUnit = bareOrgUnit(policy);
+    if (orgUnit) counts.set(orgUnit, (counts.get(orgUnit) ?? 0) + 1);
+  }
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  if (ranked.length === 0) return null;
+  if (ranked.length > 1 && ranked[0][1] === ranked[1][1]) return null;
+  return ranked[0][0];
 }
 
 /**
@@ -154,11 +232,23 @@ function normalizeType(type?: string): string {
 export class PolicySnapshot {
   readonly available: boolean;
   readonly error?: string;
+  /** Bare ID of the root org unit, or null when it cannot be identified. */
+  readonly rootOrgUnitId: string | null;
+  /** True when the policy list was cut off, so some policies may be missing. */
+  readonly partial: boolean;
+  /** Plain-language notes about how complete or reliable the snapshot is. */
+  readonly warnings: string[];
   private readonly byType = new Map<string, RawPolicy[]>();
 
-  constructor(policies: RawPolicy[], available: boolean, error?: string) {
+  constructor(policies: RawPolicy[], available: boolean, error?: string, meta: SnapshotMeta = {}) {
     this.available = available;
     this.error = error;
+    this.partial = meta.partial === true;
+    this.warnings = [...(meta.warnings ?? [])];
+    this.rootOrgUnitId = deriveRootOrgUnit(policies);
+    if (available && policies.length > 0 && this.rootOrgUnitId === null) {
+      this.warnings.push(ROOT_UNKNOWN_WARNING);
+    }
     for (const p of policies) {
       const key = normalizeType(p.setting?.type);
       if (!key) continue;
@@ -169,32 +259,74 @@ export class PolicySnapshot {
   }
 
   /**
-   * Resolve the effective org-level value for a setting type. Prefers
-   * admin-configured, non-group (organization-unit) policies so we describe the
-   * organization's posture rather than a single group override.
+   * The org unit treated as the root for one setting. Without an identified
+   * root, the org unit of the lowest-sortOrder non-group policy stands in.
+   */
+  private rootFor(list: RawPolicy[]): { orgUnit: string | null } | null {
+    if (this.rootOrgUnitId !== null) return { orgUnit: this.rootOrgUnitId };
+    const orgWide = list.filter((p) => !p.policyQuery?.group).sort(byPrecedence);
+    return orgWide.length > 0 ? { orgUnit: bareOrgUnit(orgWide[0]) } : null;
+  }
+
+  private static isRoot(policy: RawPolicy, root: { orgUnit: string | null }): boolean {
+    if (policy.policyQuery?.group) return false;
+    const orgUnit = bareOrgUnit(policy);
+    return orgUnit === null || orgUnit === root.orgUnit;
+  }
+
+  /**
+   * Resolve the root org unit's effective value for a setting type. Policies
+   * for child org units and groups never feed this value; they only count as
+   * overrides when their own value differs.
    */
   get(settingType: string): PolicyLookup {
     const list = this.byType.get(settingType) ?? [];
-    if (list.length === 0) {
-      return { found: false, value: null, scopeCount: 0 };
+    const root = this.rootFor(list);
+    const rootPolicies = root ? list.filter((p) => PolicySnapshot.isRoot(p, root)) : [];
+    if (rootPolicies.length === 0) {
+      return { found: false, value: null, overrideCount: 0, licenseConditional: false };
     }
 
-    const ouScoped = list.filter((p) => !p.policyQuery?.group);
-    const candidates = ouScoped.length > 0 ? ouScoped : list;
+    const unconditional = rootPolicies.filter((p) => !isLicenseScoped(p));
+    const licenseConditional = unconditional.length === 0;
+    const pool = licenseConditional ? rootPolicies : unconditional;
+    const value = reduceValues(settingType, [...pool].sort(byPrecedence));
 
-    // Prefer admin-set policies over Google system defaults when both appear.
-    const admin = candidates.filter((p) => p.type === 'ADMIN');
-    const chosenPool = admin.length > 0 ? admin : candidates;
-    // A missing org unit is the customer-wide policy. Otherwise the higher
-    // sortOrder is the broader org unit; a lower sortOrder is a more specific override.
-    const ranked = [...chosenPool].sort((a, b) => policyBreadth(a) - policyBreadth(b));
-    const primary = ranked[0];
+    const merge = MERGE_REDUCER_SETTINGS.has(settingType);
+    const overrideCount = this.overrides(settingType).filter((scope) =>
+      merge
+        ? Object.keys(scope.value).some((field) => !isDeepStrictEqual(value[field], scope.value[field]))
+        : !isDeepStrictEqual(value, scope.value)
+    ).length;
 
-    return {
-      found: true,
-      value: primary.setting?.value ?? {},
-      scopeCount: ouScoped.length,
-    };
+    return { found: true, value, overrideCount, licenseConditional };
+  }
+
+  /**
+   * Every org unit or group outside the root that has an admin policy for the
+   * setting, with the value from its highest-precedence policy.
+   */
+  overrides(settingType: string): PolicyScope[] {
+    const list = this.byType.get(settingType) ?? [];
+    const root = this.rootFor(list);
+    if (!root) return [];
+
+    const scopes = new Map<string, { policy: RawPolicy; kind: PolicyScope['kind'] }>();
+    for (const policy of list) {
+      if (policy.type !== 'ADMIN' || PolicySnapshot.isRoot(policy, root)) continue;
+      const group = policy.policyQuery?.group;
+      const id = group || policy.policyQuery?.orgUnit || '';
+      const key = `${group ? 'group' : 'orgUnit'}:${id}`;
+      const kept = scopes.get(key);
+      if (!kept || byPrecedence(kept.policy, policy) < 0) {
+        scopes.set(key, { policy, kind: group ? 'group' : 'orgUnit' });
+      }
+    }
+    return [...scopes.entries()].map(([key, { policy, kind }]) => ({
+      kind,
+      id: key.slice(key.indexOf(':') + 1),
+      value: policy.setting?.value ?? {},
+    }));
   }
 
   /** All policies matching a setting type (e.g. for rule.dlp counts). */
@@ -220,6 +352,8 @@ export class PolicyService {
       const policies: RawPolicy[] = [];
       let pageToken: string | undefined;
       let pageIndex = 0;
+      const warnings: string[] = [];
+      let partial = false;
 
       do {
         if (pageIndex > 0 && INTER_PAGE_DELAY_MS > 0) {
@@ -234,9 +368,18 @@ export class PolicyService {
         policies.push(...page.policies);
         pageToken = page.nextPageToken;
         pageIndex += 1;
+
+        // An empty page that still returns a token would loop forever.
+        if (pageToken && (page.policies.length === 0 || pageIndex >= MAX_POLICY_PAGES)) {
+          partial = true;
+          warnings.push(
+            `The policy list was cut off after ${pageIndex} pages. Results may be incomplete.`
+          );
+          break;
+        }
       } while (pageToken);
 
-      return new PolicySnapshot(policies, true);
+      return new PolicySnapshot(policies, true, undefined, { partial, warnings });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return new PolicySnapshot([], false, message);

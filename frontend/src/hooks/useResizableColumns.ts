@@ -71,10 +71,10 @@ export function useResizableColumns(
   minWidths: Record<string, number> = {},
   options: FixedColumnsOptions = {}
 ): ResizableColumnsApi {
-  const resizableIds = options.resizableIds ?? [];
+  const resizableKey = (options.resizableIds ?? []).join('\0');
+  const resizableIds = useMemo(() => (resizableKey ? resizableKey.split('\0') : []), [resizableKey]);
   const canResizeAny = resizableIds.length > 0;
-  const resizableKey = resizableIds.join('\0');
-  const resizableSet = useMemo(() => new Set(resizableIds), [resizableKey]);
+  const resizableSet = useMemo(() => new Set(resizableIds), [resizableIds]);
 
   const defaultsRef = useRef(defaults);
   defaultsRef.current = defaults;

@@ -1,5 +1,5 @@
 import { google } from 'googleapis';
-import { GoogleAuth, OAuth2Client } from 'google-auth-library';
+import { CodeChallengeMethod, GoogleAuth, OAuth2Client } from 'google-auth-library';
 
 let baseAuth: GoogleAuth | null = null;
 let cachedSaEmail: string | null = null;
@@ -155,7 +155,7 @@ export function getOAuth2Client(): OAuth2Client {
  * Browser OAuth is identity-only. Workspace APIs use domain-wide delegation
  * server-side; the SPA never holds Google access/refresh tokens.
  */
-export function getAuthUrl(state?: string): string {
+export function getAuthUrl(state?: string, codeChallenge?: string): string {
   const client = getOAuth2Client();
 
   return client.generateAuthUrl({
@@ -168,12 +168,21 @@ export function getAuthUrl(state?: string): string {
     ],
     prompt: 'select_account',
     ...(state ? { state } : {}),
+    ...(codeChallenge
+      ? { code_challenge: codeChallenge, code_challenge_method: CodeChallengeMethod.S256 }
+      : {}),
   });
 }
 
-export async function getTokensFromCode(code: string) {
+export async function createPkcePair(): Promise<{ codeVerifier: string; codeChallenge: string }> {
+  const { codeVerifier, codeChallenge } = await getOAuth2Client().generateCodeVerifierAsync();
+  if (!codeChallenge) throw new Error('Could not generate a PKCE code challenge');
+  return { codeVerifier, codeChallenge };
+}
+
+export async function getTokensFromCode(code: string, codeVerifier?: string) {
   const client = getOAuth2Client();
-  const { tokens } = await client.getToken(code);
+  const { tokens } = await client.getToken({ code, ...(codeVerifier ? { codeVerifier } : {}) });
   client.setCredentials(tokens);
   return tokens;
 }

@@ -1,6 +1,10 @@
 import { google } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
 import { getDelegatedAuthClient } from '../config/google.config';
+import { parseRetryAfterMs } from '../utils/retryAfter';
+
+/** Longest single wait honored from a Retry-After header. */
+const MAX_RETRY_AFTER_MS = 60_000;
 
 /**
  * Google API clients scoped to a single Workspace subject (impersonated via DWD).
@@ -80,7 +84,9 @@ export class WorkspaceService {
 
         if (status === 429) {
           const retryAfter = error.response?.headers?.['retry-after'] ?? error.headers?.['retry-after'];
-          const wait = retryAfter ? parseInt(retryAfter, 10) * 1000 : delay * Math.pow(2, attempt);
+          const headerWait = parseRetryAfterMs(retryAfter);
+          const wait =
+            headerWait === null ? delay * Math.pow(2, attempt) : Math.min(headerWait, MAX_RETRY_AFTER_MS);
           await new Promise((resolve) => setTimeout(resolve, wait));
           continue;
         }

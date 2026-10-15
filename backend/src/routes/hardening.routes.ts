@@ -1,6 +1,10 @@
 import { Router, Response } from 'express';
 import { authenticateSession, AuthRequest } from '../middleware/auth.middleware';
-import { requireAnyAdmin, requireSuperAdmin } from '../middleware/permissions.middleware';
+import {
+  requireAnyAdmin,
+  requireAuditReader,
+  requireSuperAdmin,
+} from '../middleware/permissions.middleware';
 import {
   hardeningService,
   isTransientPolicyFailure,
@@ -19,6 +23,7 @@ import { driveExportService } from '../services/driveExport.service';
 import { convertToCSV, sendCSVResponse } from '../utils/csv';
 import { sendApiError } from '../utils/apiError';
 import { twoSvUsersToCsv } from '../services/twoSvReport';
+import { validateWaiver } from '../utils/validation';
 
 const router = Router();
 
@@ -76,9 +81,9 @@ function hardeningRowsForExport(report: SecurityAuditReport, waivers: WaiversMap
 /**
  * GET /api/audit/hardening
  * Cached last-run + durable waivers (does not re-evaluate policies).
- * Alias of /hardening/latest for backwards compatibility with live tests / clients.
+ * Stored results: super admins and GWS_AUDIT_READERS only. Same payload as /hardening/latest.
  */
-router.get('/hardening', requireAnyAdmin, async (_req: AuthRequest, res: Response) => {
+router.get('/hardening', requireAuditReader, async (_req: AuthRequest, res: Response) => {
   try {
     const [report, waivers] = await Promise.all([getSecurityAuditLatest(), getSecurityAuditWaivers()]);
     res.json(buildHardeningPayload(report, waivers));
@@ -89,9 +94,9 @@ router.get('/hardening', requireAnyAdmin, async (_req: AuthRequest, res: Respons
 
 /**
  * GET /api/audit/hardening/latest
- * Explicit latest snapshot endpoint (same payload as GET /hardening).
+ * Same payload as GET /hardening.
  */
-router.get('/hardening/latest', requireAnyAdmin, async (_req: AuthRequest, res: Response) => {
+router.get('/hardening/latest', requireAuditReader, async (_req: AuthRequest, res: Response) => {
   try {
     const [report, waivers] = await Promise.all([getSecurityAuditLatest(), getSecurityAuditWaivers()]);
     res.json(buildHardeningPayload(report, waivers));
@@ -156,8 +161,9 @@ router.post('/hardening/run', requireSuperAdmin, async (req: AuthRequest, res: R
 
 /**
  * GET /api/audit/hardening/waivers
+ * Super admins and GWS_AUDIT_READERS only.
  */
-router.get('/hardening/waivers', requireAnyAdmin, async (_req: AuthRequest, res: Response) => {
+router.get('/hardening/waivers', requireAuditReader, async (_req: AuthRequest, res: Response) => {
   try {
     const waivers = await getSecurityAuditWaivers();
     res.json({ waivers });
@@ -168,16 +174,17 @@ router.get('/hardening/waivers', requireAnyAdmin, async (_req: AuthRequest, res:
 
 /**
  * PUT /api/audit/hardening/waivers/:checkId
- * Body: { reason?: string }. Super admin — set/update a durable waiver.
+ * Body: { reason: string } (required, trimmed, 1000 characters max).
+ * Super admin: set or update a durable waiver.
  */
 router.put('/hardening/waivers/:checkId', requireSuperAdmin, async (req: AuthRequest, res: Response) => {
   try {
-    const checkId = String(req.params.checkId || '').trim();
-    if (!checkId) {
-      return res.status(400).json({ error: 'checkId is required' });
+    const checkId = String(req.params.checkId || '');
+    const waiver = validateWaiver(checkId, req.body?.reason);
+    if ('error' in waiver) {
+      return res.status(400).json({ error: waiver.error });
     }
-    const reason = typeof req.body?.reason === 'string' ? req.body.reason : '';
-    const waivers = await setSecurityAuditWaiver(checkId, reason, req.user!.email);
+    const waivers = await setSecurityAuditWaiver(checkId, waiver.reason, req.user!.email);
     res.json({ waivers });
   } catch (error: any) {
     sendApiError(res, error, 'Failed to save waiver', 'audit.hardening.waivers.put');
@@ -203,8 +210,9 @@ router.delete('/hardening/waivers/:checkId', requireSuperAdmin, async (req: Auth
 
 /**
  * POST /api/audit/hardening/waivers/import
- * Body: { waivers: { [checkId]: reason } }. Super admin — merge browser-local
- * waivers into org storage without overwriting existing entries.
+ * Body: { waivers: { [checkId]: reason } }. Super admin: merge browser-local
+ * waivers into org storage without overwriting existing entries. Every entry
+ * follows the same rules as PUT, and one invalid entry rejects the import.
  */
 router.post('/hardening/waivers/import', requireSuperAdmin, async (req: AuthRequest, res: Response) => {
   try {
@@ -214,9 +222,11 @@ router.post('/hardening/waivers/import', requireSuperAdmin, async (req: AuthRequ
     }
     const normalized: Record<string, string> = {};
     for (const [id, reason] of Object.entries(incoming as Record<string, unknown>)) {
-      if (typeof id === 'string' && id) {
-        normalized[id] = typeof reason === 'string' ? reason : '';
+      const waiver = validateWaiver(id, reason);
+      if ('error' in waiver) {
+        return res.status(400).json({ error: `Invalid waiver "${id.slice(0, 80)}": ${waiver.error}` });
       }
+      normalized[id] = waiver.reason;
     }
     const waivers = await mergeSecurityAuditWaivers(normalized, req.user!.email);
     res.json({ waivers, imported: Object.keys(normalized).length });
@@ -228,8 +238,9 @@ router.post('/hardening/waivers/import', requireSuperAdmin, async (req: AuthRequ
 /**
  * GET /api/audit/hardening/export
  * Export last-run checks to CSV (does not re-run the audit).
+ * Super admins and GWS_AUDIT_READERS only.
  */
-router.get('/hardening/export', requireAnyAdmin, async (_req: AuthRequest, res: Response) => {
+router.get('/hardening/export', requireAuditReader, async (_req: AuthRequest, res: Response) => {
   try {
     const [report, waivers] = await Promise.all([getSecurityAuditLatest(), getSecurityAuditWaivers()]);
     if (!report) {
@@ -277,6 +288,7 @@ router.post('/hardening/export/drive', requireSuperAdmin, async (req: AuthReques
 /**
  * GET /api/audit/2sv
  * Live Directory list: name, email, 2-step enrolled, 2-step enforced.
+ * Runs as the signed-in admin, so Google enforces that admin's privileges.
  */
 router.get('/2sv', requireAnyAdmin, async (req: AuthRequest, res: Response) => {
   try {

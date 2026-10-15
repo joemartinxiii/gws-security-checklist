@@ -14,6 +14,21 @@ function json(data: Parameters<typeof HttpResponse.json>[0]) {
 
 const mockDriveLink = { id: 'mock-file-id', webViewLink: 'https://drive.google.com/mock' };
 
+const WAIVER_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,79}$/;
+const WAIVER_REASON_MAX = 1000;
+
+function waiverProblem(checkId: string, reason: unknown): string | null {
+  if (!WAIVER_ID_PATTERN.test(checkId)) {
+    return 'checkId must be lowercase letters, digits, and hyphens (80 characters max)';
+  }
+  const trimmed = typeof reason === 'string' ? reason.trim() : '';
+  if (!trimmed) return 'reason is required';
+  if (trimmed.length > WAIVER_REASON_MAX) {
+    return `reason must be ${WAIVER_REASON_MAX} characters or fewer`;
+  }
+  return null;
+}
+
 export const handlers = [
   http.get('*/api/auth/me', () => json(MOCK_USER)),
   http.get('*/api/auth/permissions', () =>
@@ -21,6 +36,7 @@ export const handlers = [
       permissions: ['audit.view', 'audit.export'],
       isSuperAdmin: true,
       isDelegatedAdmin: false,
+      canReadStoredAudit: true,
     })
   ),
   http.post('*/api/auth/logout', () => json({ message: 'ok' })),
@@ -35,7 +51,7 @@ export const handlers = [
       status: 'ready',
       ranAt: new Date().toISOString(),
       triggeredBy: 'admin@example.com',
-      policyApi: { available: true },
+      policyApi: hardeningData.policyApi,
       waivers: hardeningData.waivers,
     })
   ),
@@ -43,10 +59,12 @@ export const handlers = [
   http.put('*/api/audit/hardening/waivers/:checkId', async ({ params, request }) => {
     const body = (await request.json().catch(() => ({}))) as { reason?: string };
     const checkId = String(params.checkId || '');
+    const problem = waiverProblem(checkId, body.reason);
+    if (problem) return HttpResponse.json({ error: problem }, { status: 400 });
     const next = {
       ...demoHardeningWaivers,
       [checkId]: {
-        reason: typeof body.reason === 'string' ? body.reason : '',
+        reason: body.reason!.trim(),
         waivedBy: 'admin@example.com',
         waivedAt: new Date().toISOString(),
       },
@@ -62,15 +80,32 @@ export const handlers = [
     return json({ waivers: next });
   }),
   http.post('*/api/audit/hardening/waivers/import', async ({ request }) => {
-    const body = (await request.json().catch(() => ({}))) as { waivers?: Record<string, string> };
+    const body = (await request.json().catch(() => ({}))) as { waivers?: Record<string, unknown> };
+    const incoming = body.waivers;
+    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+      return HttpResponse.json({ error: 'waivers object is required' }, { status: 400 });
+    }
+    for (const [id, reason] of Object.entries(incoming)) {
+      const problem = waiverProblem(id, reason);
+      if (problem) {
+        return HttpResponse.json(
+          { error: `Invalid waiver "${id.slice(0, 80)}": ${problem}` },
+          { status: 400 }
+        );
+      }
+    }
     const next = { ...demoHardeningWaivers };
     const now = new Date().toISOString();
-    for (const [id, reason] of Object.entries(body.waivers || {})) {
+    for (const [id, reason] of Object.entries(incoming)) {
       if (id in next) continue;
-      next[id] = { reason: reason || '', waivedBy: 'admin@example.com', waivedAt: now };
+      next[id] = {
+        reason: String(reason).trim(),
+        waivedBy: 'admin@example.com',
+        waivedAt: now,
+      };
     }
     setDemoHardeningWaivers(next);
-    return json({ waivers: next, imported: Object.keys(body.waivers || {}).length });
+    return json({ waivers: next, imported: Object.keys(incoming).length });
   }),
   http.get('*/api/audit/hardening/export', () => {
     const csv = hardeningChecksToCsv(hardeningData.checks, hardeningData.waivers);

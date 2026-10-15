@@ -1,29 +1,6 @@
 /**
- * Generates a standardized export filename in the format:
- * {sanitized-domain}-{page}-{date}.{extension}
- * Example: acme.com-users-all-2026-04-10.csv
- * Uses WORKSPACE_DOMAIN (or override), descriptive page name, and YYYY-MM-DD date.
- */
-export function generateExportFilename(
-  page: string,
-  domainOverride?: string,
-  extension: string = 'csv'
-): string {
-  const rawDomain = domainOverride || process.env.WORKSPACE_DOMAIN || 'workspace';
-  const domain = rawDomain
-    .toLowerCase()
-    .replace(/[^a-z0-9.-]/g, '-')
-    .replace(/-+/g, '-'); // Collapse multiple hyphens
-
-  const now = new Date();
-  const timestamp = now.toISOString().split('T')[0];
-
-  return `${domain}-${page}-${timestamp}.${extension}`;
-}
-
-/**
- * Converts array of objects to CSV string with proper escaping.
- * Centralized to avoid duplication across routes (users, drive, groups, etc.).
+ * Converts an array of objects to a CSV string with proper escaping.
+ * Used for the audit checklist export and the 2-Step Verification report.
  * Supports basic transformation and header mapping.
  */
 export interface CSVOptions {
@@ -54,14 +31,16 @@ export function convertToCSV(data: any[], options: CSVOptions = {}): string {
 }
 
 /**
- * Escape one CSV field. A leading =, +, -, @, tab, or CR is prefixed so
- * spreadsheet apps treat waiver text and policy values as text.
+ * Escape one CSV field. A value that starts with =, +, -, or @ (after any
+ * leading whitespace or control characters, which spreadsheet apps skip), or
+ * with a tab or CR, gets a leading quote so spreadsheets treat it as text.
  */
 function csvCell(value: unknown): string {
   if (value === null || value === undefined) return '';
   const raw = Array.isArray(value) ? value.join('; ') : String(value);
   const flattened = raw.replace(/\r\n|\n|\r/g, ' ');
-  const neutralized = /^[=+\-@\t]/.test(flattened) ? `'${flattened}` : flattened;
+  const startsLikeFormula = /^[\s\p{Cc}]*[=+\-@]/u.test(raw) || /^[\t\r]/.test(raw);
+  const neutralized = startsLikeFormula ? `'${flattened}` : flattened;
   const stringValue = neutralized.replace(/"/g, '""');
   return /[",]/.test(stringValue) ? `"${stringValue}"` : stringValue;
 }
