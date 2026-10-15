@@ -1,5 +1,7 @@
 /** Columns match backend `hardeningRowsForExport` in hardening.routes.ts. */
 
+import { escapeCsvCell } from './csvCell';
+
 export type CsvCheck = {
   id: string;
   category: string;
@@ -31,17 +33,6 @@ const HEADERS = [
   'Admin Console URL',
 ] as const;
 
-function escapeCsv(value: unknown): string {
-  if (value == null) return '';
-  const flattened = String(value).replace(/\r\n|\n|\r/g, ' ');
-  const neutralized = /^[=+\-@\t]/.test(flattened) ? `'${flattened}` : flattened;
-  const stringValue = neutralized.replace(/"/g, '""');
-  if (stringValue.includes(',') || stringValue.includes('"')) {
-    return `"${stringValue}"`;
-  }
-  return stringValue;
-}
-
 export function hardeningChecksToCsv(
   checks: CsvCheck[],
   waivers: Record<string, CsvWaiver> = {}
@@ -64,7 +55,7 @@ export function hardeningChecksToCsv(
         check.recommendation || '',
         check.adminConsoleUrl || '',
       ]
-        .map(escapeCsv)
+        .map(escapeCsvCell)
         .join(',')
     );
   }
