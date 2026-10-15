@@ -1,24 +1,14 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
-import { useState, useEffect, createContext } from 'react';
+import { useState, useEffect } from 'react';
 import { Layout } from './components/Layout';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { LoginRoute } from './pages/LoginRoute';
 import { TwoSvReport } from './pages/TwoSvReport';
 import { SecurityAudit } from './pages/SecurityAudit';
 import { T, TDark } from './theme/designTokens';
-
-// Create a context for theme mode
-interface ThemeContextType {
-  mode: 'light' | 'dark';
-  toggleColorMode: () => void;
-}
-
-export const ThemeContext = createContext<ThemeContextType>({
-  mode: 'light',
-  toggleColorMode: () => {},
-});
+import { ThemeContext } from './theme/ThemeContext';
 
 function App() {
   // Get initial mode from localStorage or default to light
