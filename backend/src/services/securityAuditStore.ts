@@ -21,6 +21,10 @@ export interface PolicyApiMeta {
   code?: string;
   /** Human-readable explanation — never a raw Google JSON body. */
   message?: string;
+  /** Plain-language notes shown in a banner, e.g. a cut-off policy list. */
+  warnings?: string[];
+  /** True when the policy list was cut off, so some policies may be missing. */
+  partial?: boolean;
 }
 
 export interface HardeningStatistics {
@@ -30,6 +34,11 @@ export interface HardeningStatistics {
   fail: number;
   manual: number;
   info: number;
+  /**
+   * Severity-weighted pass rate, 0-100, over graded checks. Null when nothing
+   * was graded. Absent on snapshots saved before scoring existed.
+   */
+  score?: number | null;
 }
 
 /** Serialized check shape (matches hardening.service HardeningCheck). */
