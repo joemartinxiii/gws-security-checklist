@@ -154,11 +154,23 @@ function normalizeType(type?: string): string {
 export class PolicySnapshot {
   readonly available: boolean;
   readonly error?: string;
+  /** Bare root org unit ID (no `orgUnits/` prefix), or null when it can't be identified. */
+  readonly rootOrgUnitId: string | null;
   private readonly byType = new Map<string, RawPolicy[]>();
 
   constructor(policies: RawPolicy[], available: boolean, error?: string) {
     this.available = available;
     this.error = error;
+    const counts = new Map<string, number>();
+    for (const p of policies) {
+      const ou = p.policyQuery?.orgUnit;
+      if (p.type !== 'SYSTEM' || p.policyQuery?.group || !ou) continue;
+      const id = ou.replace(/^orgUnits\//, '');
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    this.rootOrgUnitId =
+      ranked.length > 0 && (ranked.length === 1 || ranked[0][1] > ranked[1][1]) ? ranked[0][0] : null;
     for (const p of policies) {
       const key = normalizeType(p.setting?.type);
       if (!key) continue;
