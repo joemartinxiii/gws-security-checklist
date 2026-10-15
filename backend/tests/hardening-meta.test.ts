@@ -2,6 +2,8 @@ import {
   humanizeApiFailure,
   policyApiMetaFromSnapshot,
   isTransientPolicyFailure,
+  countEnforced2sv,
+  summarize2svCoverage,
 } from '../src/services/hardening.service';
 import { PolicySnapshot } from '../src/services/policy.service';
 
@@ -46,6 +48,47 @@ describe('policyApiMetaFromSnapshot', () => {
     const meta = policyApiMetaFromSnapshot(snap);
     expect(meta.code).toBe('http_429');
     expect(meta.message).toMatch(/rate-limited/i);
+  });
+});
+
+describe('2-Step Verification coverage', () => {
+  test('pages until the directory listing ends', async () => {
+    const counted = await countEnforced2sv(async (pageToken) => {
+      if (!pageToken) {
+        return {
+          users: [{ isEnforcedIn2Sv: true }, { isEnforcedIn2Sv: false }],
+          nextPageToken: 'next',
+        };
+      }
+      return { users: [{ isEnforcedIn2Sv: true }, { isEnforcedIn2Sv: true }] };
+    });
+    expect(counted).toEqual({ enforced: 3, total: 4, complete: true });
+    expect(summarize2svCoverage(3, 4, true)).toEqual({
+      status: 'warning',
+      currentValue: '75% enforced (3/4 users)',
+    });
+  });
+
+  test('a truncated listing cannot pass', async () => {
+    const counted = await countEnforced2sv(async () => ({
+      users: [{ isEnforcedIn2Sv: true }, { isEnforcedIn2Sv: true }],
+      nextPageToken: 'more',
+    }), 2);
+    expect(counted.complete).toBe(false);
+    expect(summarize2svCoverage(counted.enforced, counted.total, counted.complete).status).toBe('warning');
+    expect(summarize2svCoverage(10, 10, false).currentValue).toMatch(/cannot pass/);
+    expect(summarize2svCoverage(9, 10, true).status).toBe('pass');
+    expect(summarize2svCoverage(0, 0, true).status).toBe('warning');
+  });
+
+  test('an empty page with another token does not loop', async () => {
+    let calls = 0;
+    const counted = await countEnforced2sv(async () => {
+      calls += 1;
+      return { users: [], nextPageToken: 'again' };
+    });
+    expect(calls).toBe(1);
+    expect(counted).toEqual({ enforced: 0, total: 0, complete: false });
   });
 });
 

@@ -88,6 +88,45 @@ function localPath(object: string): string {
   return path.join(DATA_DIR, object.replace(`${PREFIX}/`, ''));
 }
 
+/** Serialize local read-modify-write. GCS uses generation preconditions instead. */
+const localWriteChains = new Map<string, Promise<void>>();
+
+function withLocalLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = localWriteChains.get(key) ?? Promise.resolve();
+  const run = previous.then(fn, fn);
+  localWriteChains.set(
+    key,
+    run.then(
+      () => undefined,
+      () => undefined
+    )
+  );
+  return run;
+}
+
+function httpStatus(error: unknown): number | undefined {
+  const err = error as { code?: number | string; status?: number };
+  const candidate = err?.code ?? err?.status;
+  const parsed = typeof candidate === 'string' ? parseInt(candidate, 10) : candidate;
+  return typeof parsed === 'number' && Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function isNotFound(error: unknown): boolean {
+  return httpStatus(error) === 404;
+}
+
+function isPreconditionFailed(error: unknown): boolean {
+  return httpStatus(error) === 412;
+}
+
+function writeLocalFile(object: string, payload: string): void {
+  const filePath = localPath(object);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, payload, 'utf-8');
+  fs.renameSync(tmp, filePath);
+}
+
 async function writeObject(object: string, payload: string): Promise<void> {
   const bucket = await getBucket();
   if (bucket) {
@@ -97,25 +136,74 @@ async function writeObject(object: string, payload: string): Promise<void> {
     });
     return;
   }
-  const filePath = localPath(object);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, payload, 'utf-8');
+  writeLocalFile(object, payload);
 }
 
 async function readObject(object: string): Promise<string | null> {
+  const loaded = await readObjectWithGeneration(object);
+  return loaded.raw;
+}
+
+/**
+ * Body plus the GCS generation that produced it. generation 0 means the
+ * object is absent, which matches ifGenerationMatch: 0 (create-if-absent).
+ */
+async function readObjectWithGeneration(
+  object: string
+): Promise<{ raw: string | null; generation: number }> {
   const bucket = await getBucket();
-  if (bucket) {
-    const file = bucket.file(object);
-    const [exists] = await file.exists();
-    if (!exists) return null;
-    const [contents] = await file.download();
-    return contents.toString('utf-8');
+  if (!bucket) {
+    try {
+      return { raw: fs.readFileSync(localPath(object), 'utf-8'), generation: 1 };
+    } catch {
+      return { raw: null, generation: 0 };
+    }
   }
+
+  const file = bucket.file(object);
   try {
-    return fs.readFileSync(localPath(object), 'utf-8');
-  } catch {
-    return null;
+    const downloaded = await new Promise<{ raw: string; generation: number }>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      let generation = 0;
+      const stream = file.createReadStream();
+      stream.on('response', (res: { headers?: Record<string, string | string[] | undefined> }) => {
+        const header = res.headers?.['x-goog-generation'];
+        const value = Array.isArray(header) ? header[0] : header;
+        const parsed = Number(value);
+        if (Number.isFinite(parsed) && parsed > 0) generation = parsed;
+      });
+      stream.on('error', reject);
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      stream.on('end', () => {
+        if (!generation) {
+          reject(new Error(`GCS download for ${object} did not include an object generation`));
+          return;
+        }
+        resolve({ raw: Buffer.concat(chunks).toString('utf-8'), generation });
+      });
+    });
+    return downloaded;
+  } catch (error) {
+    if (isNotFound(error)) return { raw: null, generation: 0 };
+    throw error;
   }
+}
+
+async function writeObjectConditional(
+  object: string,
+  payload: string,
+  generation: number
+): Promise<void> {
+  const bucket = await getBucket();
+  if (!bucket) {
+    writeLocalFile(object, payload);
+    return;
+  }
+  await bucket.file(object).save(payload, {
+    contentType: 'application/json',
+    resumable: false,
+    preconditionOpts: { ifGenerationMatch: generation },
+  });
 }
 
 function parse<T>(raw: string | null): T | null {
@@ -137,28 +225,60 @@ export async function getLatest(): Promise<SecurityAuditReport | null> {
   return parsed;
 }
 
-export async function getWaivers(): Promise<WaiversMap> {
-  const parsed = parse<WaiversMap>(await readObject(WAIVERS_OBJECT));
+function normalizeWaivers(parsed: WaiversMap | null): WaiversMap {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-  // Normalize entries; drop garbage.
   const out: WaiversMap = {};
   for (const [id, entry] of Object.entries(parsed)) {
     if (!id || typeof id !== 'string') continue;
     if (!entry || typeof entry !== 'object') continue;
-    const reason = typeof (entry as WaiverEntry).reason === 'string' ? (entry as WaiverEntry).reason : '';
-    const waivedBy =
-      typeof (entry as WaiverEntry).waivedBy === 'string' ? (entry as WaiverEntry).waivedBy : '';
+    const reason = typeof entry.reason === 'string' ? entry.reason : '';
+    const waivedBy = typeof entry.waivedBy === 'string' ? entry.waivedBy : '';
     const waivedAt =
-      typeof (entry as WaiverEntry).waivedAt === 'string'
-        ? (entry as WaiverEntry).waivedAt
-        : new Date(0).toISOString();
+      typeof entry.waivedAt === 'string' ? entry.waivedAt : new Date(0).toISOString();
     out[id] = { reason, waivedBy, waivedAt };
   }
   return out;
 }
 
+export async function getWaivers(): Promise<WaiversMap> {
+  return normalizeWaivers(parse<WaiversMap>(await readObject(WAIVERS_OBJECT)));
+}
+
 export async function putWaivers(waivers: WaiversMap): Promise<void> {
-  await writeObject(WAIVERS_OBJECT, JSON.stringify(waivers));
+  const write = () => writeObject(WAIVERS_OBJECT, JSON.stringify(waivers));
+  if (!BUCKET_NAME) return withLocalLock(WAIVERS_OBJECT, write);
+  await write();
+}
+
+/**
+ * Read-modify-write waivers. Local disk is serialized in-process. GCS uses
+ * ifGenerationMatch and retries when another writer won the race.
+ */
+async function mutateWaivers(mutate: (current: WaiversMap) => WaiversMap): Promise<WaiversMap> {
+  const once = async (): Promise<WaiversMap> => {
+    const { raw, generation } = await readObjectWithGeneration(WAIVERS_OBJECT);
+    const next = mutate(normalizeWaivers(parse<WaiversMap>(raw)));
+    await writeObjectConditional(WAIVERS_OBJECT, JSON.stringify(next), generation);
+    return next;
+  };
+
+  const run = async (): Promise<WaiversMap> => {
+    const bucket = await getBucket();
+    const maxAttempts = bucket ? 5 : 1;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        return await once();
+      } catch (error) {
+        lastError = error;
+        if (!bucket || !isPreconditionFailed(error) || attempt === maxAttempts - 1) throw error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('Waiver update conflicted');
+  };
+
+  if (!BUCKET_NAME) return withLocalLock(WAIVERS_OBJECT, run);
+  return run();
 }
 
 export async function setWaiver(
@@ -166,23 +286,23 @@ export async function setWaiver(
   reason: string,
   waivedBy: string
 ): Promise<WaiversMap> {
-  const current = await getWaivers();
-  current[checkId] = {
-    reason: reason.trim(),
-    waivedBy,
-    waivedAt: new Date().toISOString(),
-  };
-  await putWaivers(current);
-  return current;
+  return mutateWaivers((current) => ({
+    ...current,
+    [checkId]: {
+      reason: reason.trim(),
+      waivedBy,
+      waivedAt: new Date().toISOString(),
+    },
+  }));
 }
 
 export async function removeWaiver(checkId: string): Promise<WaiversMap> {
-  const current = await getWaivers();
-  if (checkId in current) {
-    delete current[checkId];
-    await putWaivers(current);
-  }
-  return current;
+  return mutateWaivers((current) => {
+    if (!(checkId in current)) return current;
+    const next = { ...current };
+    delete next[checkId];
+    return next;
+  });
 }
 
 /** Merge a full map (used for browser→cloud one-time import). */
@@ -190,17 +310,18 @@ export async function mergeWaivers(
   incoming: Record<string, string>,
   waivedBy: string
 ): Promise<WaiversMap> {
-  const current = await getWaivers();
   const now = new Date().toISOString();
-  for (const [id, reason] of Object.entries(incoming)) {
-    if (!id || typeof id !== 'string') continue;
-    if (id in current) continue; // never overwrite an existing org waiver
-    current[id] = {
-      reason: typeof reason === 'string' ? reason.trim() : '',
-      waivedBy,
-      waivedAt: now,
-    };
-  }
-  await putWaivers(current);
-  return current;
+  return mutateWaivers((current) => {
+    const next = { ...current };
+    for (const [id, reason] of Object.entries(incoming)) {
+      if (!id || typeof id !== 'string') continue;
+      if (id in next) continue; // never overwrite an existing org waiver
+      next[id] = {
+        reason: typeof reason === 'string' ? reason.trim() : '',
+        waivedBy,
+        waivedAt: now,
+      };
+    }
+    return next;
+  });
 }

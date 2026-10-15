@@ -33,15 +33,25 @@ PROJECT_ID=your-gcp-project-id bash scripts/deploy.sh
 
 Add `https://<service-url>/api/auth/callback` to the OAuth client’s authorized redirect URIs, then sign in.
 
+`deploy.sh` writes that callback into `checklist-oauth-redirect-uri` and updates the service with the numeric secret version plus `CORS_ORIGIN`. Cloud Run rejects a full resource name (`projects/.../versions/N`) as a secret version. If that update fails, the script exits non-zero: the first revision may already be public, and sign-in stays on the bootstrap placeholder until you re-run `deploy.sh`.
+
+Do not leave the bootstrap values `PLACEHOLDER` in the OAuth client secrets.
+
+## After you change a secret
+
+Cloud Run pins the secret version that was current when the revision was created. Replacing `checklist-oauth-client-id` or any other checklist secret does not affect the running revision until you run `bash scripts/deploy.sh` again.
+
 ## Updates
 
 Re-run `bash scripts/deploy.sh` from a machine with `gcloud` and Cloud Build permissions.
+
+If domain-wide delegation was already authorized, replace that scope list in admin.google.com with the scopes `deploy.sh` prints. The previous list could change users, Chrome policies, and all of Drive. The current list is read-only, plus `drive.file` to create the checklist CSV.
 
 ## Env / secrets
 
 | Name | Role |
 |------|------|
-| `CHECKLIST_BUCKET` | GCS bucket for `latest.json` + `waivers.json` (default `<project>-security-checklist`) |
+| `CHECKLIST_BUCKET` | GCS bucket for `latest.json` + `waivers.json` (default `<project>-security-checklist`). Uniform access, public access prevention, and object versioning. |
 | `SECURITY_CHECKLIST_PREFIX` | Object prefix (default `security-checklist`) |
 | `GOOGLE_CLIENT_*` | OAuth Web client |
 | `JWT_SECRET` | Session signing |

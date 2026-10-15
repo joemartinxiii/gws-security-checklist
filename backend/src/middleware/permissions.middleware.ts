@@ -55,12 +55,8 @@ export function requirePermission(...requiredPermissions: Permission[]) {
       next();
     } catch (error: unknown) {
       console.error('Error checking permissions:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Failed to verify permissions';
-      // Propagate detailed config/role errors from permissionsService
-      res.status(500).json({ 
-        error: errorMessage.includes('Secret Manager') || errorMessage.includes('delegation') || errorMessage.includes('Domain-wide') 
-          ? errorMessage 
-          : 'Failed to verify permissions. Check server logs.' 
+      res.status(500).json({
+        error: 'Failed to verify permissions. Check server logs.',
       });
     }
   };
@@ -93,11 +89,8 @@ export async function requireAnyAdmin(
     next();
   } catch (error: unknown) {
     console.error('Error verifying admin status:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Failed to verify admin privileges';
-    res.status(500).json({ 
-      error: errorMessage.includes('Secret Manager') || errorMessage.includes('delegation') || errorMessage.includes('Domain-wide') 
-        ? errorMessage 
-        : 'Failed to verify admin privileges. Check server logs and SECURITY.md.' 
+    res.status(500).json({
+      error: 'Failed to verify admin privileges. Check server logs and SECURITY.md.',
     });
   }
 }
@@ -129,11 +122,8 @@ export async function requireSuperAdmin(
     next();
   } catch (error: unknown) {
     console.error('Error verifying super admin status:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Failed to verify super admin privileges';
-    res.status(500).json({ 
-      error: errorMessage.includes('Secret Manager') || errorMessage.includes('delegation') || errorMessage.includes('Domain-wide') 
-        ? errorMessage 
-        : 'Failed to verify super admin privileges. Check server logs and SECURITY.md.' 
+    res.status(500).json({
+      error: 'Failed to verify super admin privileges. Check server logs and SECURITY.md.',
     });
   }
 }

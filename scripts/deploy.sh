@@ -56,17 +56,10 @@ gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SA_EMAIL}" \
   --project="${PROJECT_ID}" \
   --quiet >/dev/null
 
-if ! gcloud storage buckets describe "gs://${CHECKLIST_BUCKET}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-  log "Creating bucket gs://${CHECKLIST_BUCKET}..."
-  gcloud storage buckets create "gs://${CHECKLIST_BUCKET}" \
-    --project="${PROJECT_ID}" \
-    --location="${REGION}" \
-    --uniform-bucket-level-access
-fi
-gcloud storage buckets add-iam-policy-binding "gs://${CHECKLIST_BUCKET}" \
-  --member="serviceAccount:${RUNTIME_SA_EMAIL}" \
-  --role="roles/storage.objectAdmin" \
-  --quiet >/dev/null
+revoke_project_run_invoker "${PROJECT_ID}" "serviceAccount:${RUNTIME_SA_EMAIL}"
+
+log "Ensuring bucket gs://${CHECKLIST_BUCKET}..."
+ensure_checklist_bucket "${PROJECT_ID}" "${CHECKLIST_BUCKET}" "${REGION}" "serviceAccount:${RUNTIME_SA_EMAIL}"
 
 log "Building image..."
 gcloud builds submit "${ROOT}" \
@@ -96,12 +89,21 @@ REDIRECT_URI="${SERVICE_URL}/api/auth/callback"
 
 if gcloud secrets describe checklist-oauth-redirect-uri --project="${PROJECT_ID}" >/dev/null 2>&1; then
   echo -n "${REDIRECT_URI}" | gcloud secrets versions add checklist-oauth-redirect-uri --project="${PROJECT_ID}" --data-file=- --quiet
-  REDIRECT_VER="$(gcloud secrets versions list checklist-oauth-redirect-uri --project="${PROJECT_ID}" --filter='state:enabled' --sort-by=~createTime --format='value(name)' --limit=1)"
-  gcloud run services update "${CLOUD_RUN_SERVICE}" \
+  # value(name) is the full resource name (projects/.../versions/N). Cloud Run
+  # accepts only the version number or "latest".
+  REDIRECT_RESOURCE="$(gcloud secrets versions list checklist-oauth-redirect-uri --project="${PROJECT_ID}" --filter='state:enabled' --sort-by=~createTime --format='value(name)' --limit=1)"
+  REDIRECT_VER="${REDIRECT_RESOURCE##*/}"
+  [[ "${REDIRECT_VER}" =~ ^[0-9]+$ ]] || die "Could not resolve checklist-oauth-redirect-uri version from '${REDIRECT_RESOURCE}'"
+  log "Updating service with CORS_ORIGIN and redirect secret version ${REDIRECT_VER}..."
+  if ! gcloud run services update "${CLOUD_RUN_SERVICE}" \
     --region "${REGION}" --project="${PROJECT_ID}" \
     --set-env-vars "NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},SERVICE_ACCOUNT_EMAIL=${RUNTIME_SA_EMAIL},CORS_ORIGIN=${SERVICE_URL},CHECKLIST_BUCKET=${CHECKLIST_BUCKET}" \
     --update-secrets "GOOGLE_REDIRECT_URI=checklist-oauth-redirect-uri:${REDIRECT_VER}" \
-    --quiet
+    --quiet; then
+    die "Cloud Run is up, but sign-in is not configured. CORS_ORIGIN and the callback secret were not applied. Re-run deploy.sh."
+  fi
+else
+  die "Secret checklist-oauth-redirect-uri is missing. Run scripts/bootstrap.sh first."
 fi
 
 log ""

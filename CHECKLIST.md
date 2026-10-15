@@ -15,7 +15,7 @@ When the Policy API is unavailable (API off, missing DWD scope, or caller not su
 ## Check catalog
 
 ### Authentication
-- **Auto** — 2-Step Verification (enrollment rate proxy)
+- **Auto** — 2-Step Verification (Directory enrollment, paged)
 - **Auto** — Strong password policy (`security.password`)
 - **Auto** — Advanced Protection Program
 
@@ -98,9 +98,9 @@ Compliance percentage uses graded checks only: `pass / (pass + warning + fail)`.
 ## Requirements
 
 - `https://www.googleapis.com/auth/cloud-identity.policies.readonly`
-- `https://www.googleapis.com/auth/chrome.management.policy`
-- `https://www.googleapis.com/auth/admin.directory.user`
-- `https://www.googleapis.com/auth/drive` (export to Drive only)
+- `https://www.googleapis.com/auth/chrome.management.policy.readonly`
+- `https://www.googleapis.com/auth/admin.directory.user.readonly`
+- `https://www.googleapis.com/auth/drive.file` (export to Drive only)
 
 Run the checklist as a Workspace **super admin**.
 
@@ -110,5 +110,5 @@ Run the checklist as a Workspace **super admin**.
 
 - Some settings are always manual (no Google API)
 - DNS checks need outbound DNS from the service
-- 2FA coverage is a Directory sample proxy, not the full org 2SV schedule
+- 2FA coverage pages through Directory users. A scan that hits the 50,000-user cap cannot pass
 - Enterprise-only features (DLP, CAA) may be unavailable on the SKU

@@ -5,7 +5,6 @@ const MOCK_USER = {
   email: 'admin@example.com',
   name: 'Mock Admin',
   allowedDomains: ['example.com'],
-  protectedUsers: [] as string[],
 };
 
 function json(data: Parameters<typeof HttpResponse.json>[0]) {

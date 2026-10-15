@@ -24,9 +24,9 @@ Enforced server-side by `requireAnyAdmin` / `requireSuperAdmin`. Hiding a button
 Keep these in sync in `scripts/lib/scopes.sh` and `backend/src/config/google.config.ts`. Run `npm run check:scopes`.
 
 - `https://www.googleapis.com/auth/cloud-identity.policies.readonly`
-- `https://www.googleapis.com/auth/chrome.management.policy`
-- `https://www.googleapis.com/auth/admin.directory.user`
-- `https://www.googleapis.com/auth/drive` (CSV upload only)
+- `https://www.googleapis.com/auth/chrome.management.policy.readonly`
+- `https://www.googleapis.com/auth/admin.directory.user.readonly`
+- `https://www.googleapis.com/auth/drive.file` (create the checklist CSV only)
 
 Browser OAuth: `openid`, `userinfo.email`, `userinfo.profile`.
 

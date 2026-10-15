@@ -82,6 +82,66 @@ function humanEnum(v: string | undefined): string {
   return HUMAN_ENUM[v] ?? v;
 }
 
+export interface TwoSvCount {
+  enforced: number;
+  total: number;
+  /** False when the Directory listing still had another page at the cap. */
+  complete: boolean;
+}
+
+/**
+ * Page through Directory users.list. A truncated count must not be scored as
+ * a full-org pass.
+ */
+export async function countEnforced2sv(
+  listPage: (pageToken?: string) => Promise<{
+    users?: Array<{ isEnforcedIn2Sv?: boolean }>;
+    nextPageToken?: string;
+  }>,
+  maxUsers = 50000
+): Promise<TwoSvCount> {
+  let pageToken: string | undefined;
+  let enforced = 0;
+  let total = 0;
+  let complete = true;
+  do {
+    const page = await listPage(pageToken);
+    const users = page.users || [];
+    total += users.length;
+    enforced += users.filter((user) => user.isEnforcedIn2Sv === true).length;
+    pageToken = page.nextPageToken || undefined;
+    // An empty page that still advertises another page would loop forever.
+    if (pageToken && (users.length === 0 || total >= maxUsers)) {
+      complete = false;
+      break;
+    }
+  } while (pageToken);
+  return { enforced, total, complete };
+}
+
+export function summarize2svCoverage(
+  enforced: number,
+  total: number,
+  complete: boolean
+): { status: 'pass' | 'warning' | 'fail'; currentValue: string } {
+  const rate = total > 0 ? enforced / total : 0;
+  const pct = Math.round(rate * 100);
+  const counted = `${pct}% enforced (${enforced}/${total} users)`;
+  if (total === 0) {
+    return { status: 'warning', currentValue: 'No users returned by Directory' };
+  }
+  if (!complete) {
+    return {
+      status: rate > 0.5 ? 'warning' : 'fail',
+      currentValue: `${counted}; directory listing stopped early, so this cannot pass`,
+    };
+  }
+  return {
+    status: rate > 0.8 ? 'pass' : rate > 0.5 ? 'warning' : 'fail',
+    currentValue: counted,
+  };
+}
+
 /** Map raw errors to stable operator/client copy — never surface Google JSON. */
 export function humanizeApiFailure(error: unknown, context: string): string {
   const msg = error instanceof Error ? error.message : String(error ?? '');
@@ -242,18 +302,26 @@ export class HardeningService extends WorkspaceService {
     };
     try {
       const admin = await this.adminFor(userEmail);
-      const usersResponse = await this.withRetry(() =>
-        admin.users.list({ customer: 'my_customer', maxResults: 100 })
-      );
-      const users = usersResponse.data.users || [];
-      const usersWith2FA = users.filter((u: any) => u.isEnforcedIn2Sv === true).length;
-      const totalUsers = users.length;
-      const rate = totalUsers > 0 ? usersWith2FA / totalUsers : 0;
+      const counted = await countEnforced2sv(async (pageToken) => {
+        const usersResponse = await this.withRetry(() =>
+          admin.users.list({
+            customer: 'my_customer',
+            maxResults: 500,
+            pageToken,
+            fields: 'users(isEnforcedIn2Sv),nextPageToken',
+          })
+        );
+        return {
+          users: usersResponse.data.users || [],
+          nextPageToken: usersResponse.data.nextPageToken,
+        };
+      });
+      const summary = summarize2svCoverage(counted.enforced, counted.total, counted.complete);
       return {
         ...this.baseFrom(meta),
-        status: rate > 0.8 ? 'pass' : rate > 0.5 ? 'warning' : 'fail',
+        status: summary.status,
         source: 'auto',
-        currentValue: `${Math.round(rate * 100)}% of users enforced (${usersWith2FA}/${totalUsers} sample)`,
+        currentValue: summary.currentValue,
       };
     } catch (error: unknown) {
       return {
@@ -1239,7 +1307,7 @@ export class HardeningService extends WorkspaceService {
         rationale:
           'Without Chrome Policy API access we cannot confirm browser update and extension posture automatically.',
         recommendation:
-          'Enable chromepolicy.googleapis.com and grant the chrome.management.policy DWD scope, then re-run the audit.',
+          'Enable chromepolicy.googleapis.com and grant the chrome.management.policy.readonly DWD scope, then re-run the audit.',
         issues: [humanizeApiFailure(error, 'Chrome Policy API')],
       });
     }

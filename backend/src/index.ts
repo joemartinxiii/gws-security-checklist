@@ -1,4 +1,4 @@
-import dotenv from 'dotenv';
+import './bootstrap-env';
 import { createApp } from './app';
 import { validateEnvironment } from './utils/env.validation';
 
@@ -11,8 +11,6 @@ console.log('Environment:', {
   hasWorkspaceDomain: !!process.env.WORKSPACE_DOMAIN?.trim(),
   hasClientId: !!process.env.GOOGLE_CLIENT_ID?.trim(),
 });
-
-dotenv.config();
 
 const isTestRuntime = process.env.NODE_ENV === 'test' || !!process.env.JEST_WORKER_ID;
 

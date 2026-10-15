@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+.git
+.env
+.env.*
+backend/data
+coverage
+test-results
+playwright-report
+playwright/.cache
+**/dist
+*.log
+.DS_Store
