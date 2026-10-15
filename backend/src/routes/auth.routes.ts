@@ -87,7 +87,7 @@ router.get('/callback', async (req: Request, res: Response) => {
     }
     // ---------------------------------------------------------------------
 
-    const sessionToken = authService.createSessionToken(userInfo);
+    const sessionToken = await authService.createSessionToken(userInfo);
     res.cookie(SESSION_COOKIE_NAME, sessionToken, sessionCookieOptions());
 
     // Clean redirect — no tokens in query or fragment
@@ -121,7 +121,15 @@ router.get('/me', authenticateSession, async (req: AuthRequest, res: Response) =
  * POST /api/auth/logout
  * Clear session cookie. Does not require a valid session (always clear client state).
  */
-router.post('/logout', (_req: Request, res: Response) => {
+router.post('/logout', async (req: Request, res: Response) => {
+  const token = req.cookies?.[SESSION_COOKIE_NAME];
+  if (typeof token === 'string' && token) {
+    try {
+      await authService.revokeSessionToken(token);
+    } catch (error) {
+      console.error('Error revoking session:', error);
+    }
+  }
   res.clearCookie(SESSION_COOKIE_NAME, clearCookieOptions());
   res.clearCookie(OAUTH_STATE_COOKIE_NAME, clearCookieOptions());
   res.json({ message: 'Logged out successfully' });

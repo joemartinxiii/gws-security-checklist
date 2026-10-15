@@ -36,7 +36,7 @@ The browser consent screen is `openid`, `userinfo.email`, and `userinfo.profile`
 
 ## Session and errors
 
-The session is an HttpOnly cookie. Each request replaces it. The cookie expires 15 minutes after the last request (`IDLE_TIMEOUT`). It also ends 8 hours after sign-in (`JWT_EXPIRES_IN`), even if the admin is still working. The OAuth callback does not put tokens in the query string. In production, CORS allows only `CORS_ORIGIN`.
+The session is an HttpOnly cookie signed with HS256. Each admin has one session, stored next to the checklist snapshot. Each request replaces the cookie. The previous cookie works for a few seconds so two requests in flight do not sign each other out. Logout deletes the stored session, so a copied cookie stops working. The cookie expires 15 minutes after the last request (`IDLE_TIMEOUT`). It also ends 1 hour after sign-in (`JWT_EXPIRES_IN`), even if the admin is still working. The OAuth callback does not put tokens in the query string. In production, CORS allows only `CORS_ORIGIN`.
 
 `/health` returns `{ status, timestamp }`.
 

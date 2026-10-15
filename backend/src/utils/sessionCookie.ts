@@ -25,9 +25,9 @@ export function idleTimeoutMs(): number {
   return parseDurationMs(process.env.IDLE_TIMEOUT || '15m', 15 * 60 * 1000);
 }
 
-/** Hard stop from the original sign-in, even if the admin keeps working. Default 8 hours. */
+/** Hard stop from the original sign-in, even if the admin keeps working. Default 1 hour. */
 export function absoluteSessionMs(): number {
-  return parseDurationMs(process.env.JWT_EXPIRES_IN || '8h', 8 * 60 * 60 * 1000);
+  return parseDurationMs(process.env.JWT_EXPIRES_IN || '1h', 60 * 60 * 1000);
 }
 
 export function sessionMaxAgeMs(): number {

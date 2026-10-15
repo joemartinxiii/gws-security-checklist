@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -125,6 +126,25 @@ function writeLocalFile(object: string, payload: string): void {
   const tmp = `${filePath}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, payload, 'utf-8');
   fs.renameSync(tmp, filePath);
+}
+
+async function deleteObject(object: string): Promise<void> {
+  const bucket = await getBucket();
+  if (bucket) {
+    try {
+      await bucket.file(object).delete();
+    } catch (error) {
+      if (isNotFound(error)) return;
+      throw error;
+    }
+    return;
+  }
+  try {
+    fs.unlinkSync(localPath(object));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') throw error;
+  }
 }
 
 async function writeObject(object: string, payload: string): Promise<void> {
@@ -324,4 +344,93 @@ export async function mergeWaivers(
     }
     return next;
   });
+}
+
+/** One active sign-in per admin. A replaced session id stays valid briefly. */
+export interface AdminSessionRecord {
+  sid: string;
+  previousSid?: string;
+  previousSidUntil?: number;
+  email: string;
+  name: string;
+  picture?: string;
+  authTime: number;
+  lastActivity: number;
+}
+
+function sessionObject(email: string): string {
+  const hash = crypto.createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
+  return `${PREFIX}/sessions/${hash}.json`;
+}
+
+function normalizeSession(parsed: AdminSessionRecord | null): AdminSessionRecord | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  if (typeof parsed.sid !== 'string' || !parsed.sid) return null;
+  if (typeof parsed.email !== 'string' || !parsed.email) return null;
+  if (typeof parsed.name !== 'string') return null;
+  if (typeof parsed.authTime !== 'number' || typeof parsed.lastActivity !== 'number') return null;
+  return {
+    sid: parsed.sid,
+    previousSid: typeof parsed.previousSid === 'string' ? parsed.previousSid : undefined,
+    previousSidUntil: typeof parsed.previousSidUntil === 'number' ? parsed.previousSidUntil : undefined,
+    email: parsed.email,
+    name: parsed.name,
+    picture: typeof parsed.picture === 'string' ? parsed.picture : undefined,
+    authTime: parsed.authTime,
+    lastActivity: parsed.lastActivity,
+  };
+}
+
+export async function getAdminSession(email: string): Promise<AdminSessionRecord | null> {
+  return normalizeSession(parse<AdminSessionRecord>(await readObject(sessionObject(email))));
+}
+
+/** New sign-in. Replaces whatever session that admin had. */
+export async function saveAdminSession(record: AdminSessionRecord): Promise<void> {
+  const object = sessionObject(record.email);
+  const write = () => writeObject(object, JSON.stringify(record));
+  if (!BUCKET_NAME) return withLocalLock(object, write);
+  await write();
+}
+
+export async function deleteAdminSession(email: string): Promise<void> {
+  const object = sessionObject(email);
+  const remove = () => deleteObject(object);
+  if (!BUCKET_NAME) return withLocalLock(object, remove);
+  await remove();
+}
+
+/**
+ * Read-modify-write one admin session. Local disk is serialized in-process.
+ * GCS retries when another writer won the race.
+ */
+export async function updateAdminSession(
+  email: string,
+  mutate: (current: AdminSessionRecord | null) => AdminSessionRecord
+): Promise<AdminSessionRecord> {
+  const object = sessionObject(email);
+  const once = async (): Promise<AdminSessionRecord> => {
+    const { raw, generation } = await readObjectWithGeneration(object);
+    const next = mutate(normalizeSession(parse<AdminSessionRecord>(raw)));
+    await writeObjectConditional(object, JSON.stringify(next), generation);
+    return next;
+  };
+
+  const run = async (): Promise<AdminSessionRecord> => {
+    const bucket = await getBucket();
+    const maxAttempts = bucket ? 5 : 1;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        return await once();
+      } catch (error) {
+        lastError = error;
+        if (!bucket || !isPreconditionFailed(error) || attempt === maxAttempts - 1) throw error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('Session update conflicted');
+  };
+
+  if (!BUCKET_NAME) return withLocalLock(object, run);
+  return run();
 }

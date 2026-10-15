@@ -44,10 +44,10 @@ export async function authenticateSession(
       return;
     }
 
-    const session = authService.verifySessionToken(token);
+    const session = await authService.verifySessionToken(token);
     req.user = { email: session.email, name: session.name, picture: session.picture };
     if (req.cookies?.[SESSION_COOKIE_NAME]) {
-      const refreshed = authService.refreshSessionToken(session);
+      const refreshed = await authService.refreshSessionToken(session);
       res.cookie(SESSION_COOKIE_NAME, refreshed.token, sessionCookieOptions(refreshed.maxAgeMs));
     }
     next();
@@ -71,7 +71,7 @@ export async function optionalAuth(
     const token = extractSessionToken(req);
 
     if (token) {
-      const user = authService.verifySessionToken(token);
+      const user = await authService.verifySessionToken(token);
       req.user = user;
     }
     next();

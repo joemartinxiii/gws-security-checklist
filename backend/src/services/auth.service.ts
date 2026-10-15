@@ -1,6 +1,16 @@
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { getOAuth2Client, getTokensFromCode } from '../config/google.config';
+import {
+  deleteAdminSession,
+  getAdminSession,
+  saveAdminSession,
+  updateAdminSession,
+} from './securityAuditStore';
 import { absoluteSessionMs, idleTimeoutMs } from '../utils/sessionCookie';
+
+/** How long the previous cookie still works after a request replaces it. */
+export const SESSION_ROTATION_GRACE_MS = 10_000;
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
@@ -23,8 +33,24 @@ export interface UserInfo {
 }
 
 export interface SessionClaims extends UserInfo {
+  sid: string;
   authTime: number;
   lastActivity: number;
+}
+
+const KNOWN_SESSION_ERRORS = new Set([
+  'Session idle timeout',
+  'Session ended',
+  'Session revoked',
+]);
+
+function newSid(): string {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+function rethrowKnown(error: unknown): never {
+  if (error instanceof Error && KNOWN_SESSION_ERRORS.has(error.message)) throw error;
+  throw new Error('Invalid or expired token');
 }
 
 export class AuthService {
@@ -67,30 +93,42 @@ export class AuthService {
   }
 
   /**
-   * Create a JWT for a new sign-in. The token expires at the idle window.
-   * authTime is the original sign-in and does not move.
+   * Create a JWT for a new sign-in. Replaces any session this admin already has.
+   * The token expires at the idle window. authTime does not move.
    */
-  createSessionToken(userInfo: UserInfo): string {
+  async createSessionToken(userInfo: UserInfo): Promise<string> {
     const now = nowSeconds();
-    return this.signSession({
+    const claims: SessionClaims = {
       email: userInfo.email,
       name: userInfo.name,
       picture: userInfo.picture,
+      sid: newSid(),
       authTime: now,
       lastActivity: now,
+    };
+    await saveAdminSession({
+      sid: claims.sid,
+      email: claims.email,
+      name: claims.name,
+      picture: claims.picture,
+      authTime: claims.authTime,
+      lastActivity: claims.lastActivity,
     });
+    return this.signSession(claims);
   }
 
   /**
-   * Verify a JWT. Rejects it after 15 minutes without a request, and 8 hours
-   * after the original sign-in. Tokens from before idle tracking use iat.
+   * Verify a JWT. Rejects it after 15 minutes without a request, and 1 hour
+   * after the original sign-in. The session id must still be the one on file,
+   * or the previous id inside the short replacement window.
    */
-  verifySessionToken(token: string): SessionClaims {
+  async verifySessionToken(token: string): Promise<SessionClaims> {
     try {
-      const decoded = jwt.verify(token, jwtSecret) as jwt.JwtPayload & {
+      const decoded = jwt.verify(token, jwtSecret, { algorithms: ['HS256'] }) as jwt.JwtPayload & {
         email?: string;
         name?: string;
         picture?: string;
+        sid?: string;
         authTime?: number;
         lastActivity?: number;
       };
@@ -106,31 +144,101 @@ export class AuthService {
       if (now - authTime > Math.floor(absoluteSessionMs() / 1000)) {
         throw new Error('Session ended');
       }
+      if (!decoded.sid) {
+        throw new Error('Session revoked');
+      }
+      const record = await getAdminSession(decoded.email);
+      const nowMs = Date.now();
+      const current = record?.sid === decoded.sid && record.authTime === authTime;
+      const previous =
+        record?.previousSid === decoded.sid &&
+        record.authTime === authTime &&
+        typeof record.previousSidUntil === 'number' &&
+        nowMs < record.previousSidUntil;
+      if (!current && !previous) {
+        throw new Error('Session revoked');
+      }
       return {
         email: decoded.email,
         name: decoded.name,
         picture: decoded.picture,
+        sid: decoded.sid,
         authTime,
         lastActivity,
       };
     } catch (error) {
-      if (error instanceof Error && (error.message === 'Session idle timeout' || error.message === 'Session ended')) {
-        throw error;
-      }
-      throw new Error('Invalid or expired token');
+      rethrowKnown(error);
     }
   }
 
   /**
-   * Replace the cookie after a real request. The new token expires 15 minutes
-   * from now, or sooner if the 8-hour sign-in limit is closer.
+   * Replace the cookie after a real request. The previous cookie works for a
+   * few seconds so two requests in flight do not sign each other out. The new
+   * token expires 15 minutes from now, or sooner if the 1-hour limit is closer.
    */
-  refreshSessionToken(session: SessionClaims): { token: string; maxAgeMs: number } {
+  async refreshSessionToken(session: SessionClaims): Promise<{ token: string; maxAgeMs: number }> {
     const now = nowSeconds();
-    const claims: SessionClaims = { ...session, lastActivity: now };
+    const stored = await updateAdminSession(session.email, (current) => {
+      if (!current || current.authTime !== session.authTime) {
+        throw new Error('Session revoked');
+      }
+      const nowMs = Date.now();
+      if (current.sid === session.sid) {
+        return {
+          ...current,
+          previousSid: current.sid,
+          previousSidUntil: nowMs + SESSION_ROTATION_GRACE_MS,
+          sid: newSid(),
+          lastActivity: now,
+        };
+      }
+      if (
+        current.previousSid === session.sid &&
+        typeof current.previousSidUntil === 'number' &&
+        nowMs < current.previousSidUntil
+      ) {
+        return { ...current, lastActivity: now };
+      }
+      throw new Error('Session revoked');
+    });
+    const claims: SessionClaims = {
+      email: stored.email,
+      name: stored.name,
+      picture: stored.picture,
+      sid: stored.sid,
+      authTime: stored.authTime,
+      lastActivity: stored.lastActivity,
+    };
     const token = this.signSession(claims);
     const absoluteLeftMs = (claims.authTime + Math.floor(absoluteSessionMs() / 1000) - now) * 1000;
     return { token, maxAgeMs: Math.min(idleTimeoutMs(), Math.max(absoluteLeftMs, 1000)) };
+  }
+
+  /**
+   * Logout. Deletes the stored session when this token is the current cookie
+   * or the previous cookie still inside the replacement window.
+   */
+  async revokeSessionToken(token: string): Promise<void> {
+    try {
+      const decoded = jwt.verify(token, jwtSecret, {
+        algorithms: ['HS256'],
+        ignoreExpiration: true,
+      }) as jwt.JwtPayload & { email?: string; sid?: string };
+      if (!decoded.email || !decoded.sid) return;
+      const record = await getAdminSession(decoded.email);
+      if (!record) return;
+      const nowMs = Date.now();
+      const current = record.sid === decoded.sid;
+      const previous =
+        record.previousSid === decoded.sid &&
+        typeof record.previousSidUntil === 'number' &&
+        nowMs < record.previousSidUntil;
+      if (current || previous) {
+        await deleteAdminSession(decoded.email);
+      }
+    } catch {
+      return;
+    }
   }
 
   private signSession(claims: SessionClaims): string {
@@ -143,11 +251,12 @@ export class AuthService {
         email: claims.email,
         name: claims.name,
         picture: claims.picture,
+        sid: claims.sid,
         authTime: claims.authTime,
         lastActivity: claims.lastActivity,
       },
       jwtSecret,
-      { expiresIn: ttlSeconds }
+      { algorithm: 'HS256', expiresIn: ttlSeconds }
     );
   }
 
