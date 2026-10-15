@@ -17,7 +17,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "express-rate-limit": "^8.3.2",
+    "express-rate-limit": "^8.7.1",
     "googleapis": "^128.0.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2"
@@ -32,11 +32,11 @@
     "@types/node": "^24.0.0",
     "@types/supertest": "^7.2.1",
     "eslint": "^9.39.0",
-    "jest": "^30.4.2",
+    "jest": "^30.5.2",
     "supertest": "^7.3.1",
-    "ts-jest": "^29.4.11",
-    "tsx": "^4.23.0",
+    "ts-jest": "^29.4.14",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.50.0"
+    "typescript-eslint": "^8.71.2"
   }
 }
