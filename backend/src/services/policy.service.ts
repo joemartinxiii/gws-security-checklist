@@ -19,8 +19,11 @@ import { parseRetryAfterMs } from '../utils/retryAfter';
 
 const POLICIES_ENDPOINT = 'https://cloudidentity.googleapis.com/v1/policies';
 
-/** Prefer fewer pages — Cloud Identity accepts up to this many per list call. */
-const PAGE_SIZE = 1000;
+/**
+ * policies.list allows at most 100. A larger pageSize is rewritten to 100,
+ * and a page token is only valid when later calls send the same page size.
+ */
+const PAGE_SIZE = 100;
 /** Brief pause between pages to avoid burst rate limits on large tenants. */
 const INTER_PAGE_DELAY_MS = 150;
 /** Retries for transient 429 / 5xx (exponential backoff + Retry-After). */
@@ -354,6 +357,8 @@ export class PolicyService {
       let pageIndex = 0;
       const warnings: string[] = [];
       let partial = false;
+      const seenTokens = new Set<string>();
+      let emptyStreak = 0;
 
       do {
         if (pageIndex > 0 && INTER_PAGE_DELAY_MS > 0) {
@@ -365,18 +370,34 @@ export class PolicyService {
         if (pageToken) url.searchParams.set('pageToken', pageToken);
 
         const page = await fetchPoliciesPage(url.toString(), token);
-        policies.push(...page.policies);
-        pageToken = page.nextPageToken;
         pageIndex += 1;
+        const nextToken = page.nextPageToken;
 
-        // An empty page that still returns a token would loop forever.
-        if (pageToken && (page.policies.length === 0 || pageIndex >= MAX_POLICY_PAGES)) {
+        if (page.policies.length > 0) {
+          emptyStreak = 0;
+          policies.push(...page.policies);
+        } else {
+          emptyStreak += 1;
+        }
+
+        if (!nextToken) break;
+
+        const repeatedToken = seenTokens.has(nextToken);
+        // Google sometimes returns a next-page token on an empty trailing page.
+        // Follow one empty page. A second empty page, or the same token again
+        // on an empty page, means there are no further policies.
+        const trailingEmpty = emptyStreak >= 2 || (emptyStreak >= 1 && repeatedToken);
+        if (pageIndex >= MAX_POLICY_PAGES || (repeatedToken && !trailingEmpty)) {
           partial = true;
           warnings.push(
             `The policy list was cut off after ${pageIndex} pages. Results may be incomplete.`
           );
           break;
         }
+        if (trailingEmpty) break;
+
+        seenTokens.add(nextToken);
+        pageToken = nextToken;
       } while (pageToken);
 
       return new PolicySnapshot(policies, true, undefined, { partial, warnings });

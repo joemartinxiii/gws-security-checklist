@@ -53,22 +53,25 @@ describe('policyService.loadOrgPolicies', () => {
   const onePolicy = [{ setting: { type: 'settings/a.b', value: {} }, type: 'ADMIN' }];
 
   test('caps paging at 200 pages and marks the snapshot partial', async () => {
-    const fetchMock = jest.fn(async () => jsonResponse({ policies: onePolicy, nextPageToken: 'more' }));
+    let n = 0;
+    const fetchMock = jest.fn(async () => {
+      n += 1;
+      return jsonResponse({ policies: onePolicy, nextPageToken: `page-${n}` });
+    });
     global.fetch = fetchMock as unknown as typeof fetch;
 
     const snapshot = await policyService.loadOrgPolicies('admin@example.com');
 
     expect(fetchMock).toHaveBeenCalledTimes(200);
+    const firstUrl = String((fetchMock.mock.calls as unknown[][])[0][0]);
+    expect(firstUrl).toContain('pageSize=100');
     expect(snapshot.available).toBe(true);
     expect(snapshot.partial).toBe(true);
     expect(snapshot.warnings).toContain('The policy list was cut off after 200 pages. Results may be incomplete.');
   });
 
-  test('stops when an empty page still returns a token', async () => {
-    const fetchMock = jest
-      .fn()
-      .mockResolvedValueOnce(jsonResponse({ policies: onePolicy, nextPageToken: 'p2' }))
-      .mockResolvedValueOnce(jsonResponse({ policies: [], nextPageToken: 'p3' }));
+  test('stops when the same token comes back with more policies', async () => {
+    const fetchMock = jest.fn(async () => jsonResponse({ policies: onePolicy, nextPageToken: 'again' }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
     const snapshot = await policyService.loadOrgPolicies('admin@example.com');
@@ -76,7 +79,39 @@ describe('policyService.loadOrgPolicies', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(snapshot.partial).toBe(true);
     expect(snapshot.warnings.join(' ')).toMatch(/cut off after 2 pages/);
+  });
+
+  test('treats a trailing empty page as the end of the list', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ policies: onePolicy, nextPageToken: 'p2' }))
+      .mockResolvedValueOnce(jsonResponse({ policies: [], nextPageToken: 'p3' }))
+      .mockResolvedValueOnce(jsonResponse({ policies: [], nextPageToken: 'p4' }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const snapshot = await policyService.loadOrgPolicies('admin@example.com');
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(snapshot.partial).toBe(false);
+    expect(snapshot.warnings.filter((w) => /cut off/.test(w))).toEqual([]);
     expect(snapshot.all('a.b')).toHaveLength(1);
+  });
+
+  test('keeps policies that arrive after one empty page', async () => {
+    const later = [{ setting: { type: 'settings/c.d', value: {} }, type: 'ADMIN' }];
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ policies: onePolicy, nextPageToken: 'p2' }))
+      .mockResolvedValueOnce(jsonResponse({ policies: [], nextPageToken: 'p3' }))
+      .mockResolvedValueOnce(jsonResponse({ policies: later }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const snapshot = await policyService.loadOrgPolicies('admin@example.com');
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(snapshot.partial).toBe(false);
+    expect(snapshot.all('a.b')).toHaveLength(1);
+    expect(snapshot.all('c.d')).toHaveLength(1);
   });
 
   test('a complete list is not partial', async () => {

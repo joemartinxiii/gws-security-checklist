@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Policy paging requests 100 policies per page, which is the Cloud Identity maximum. One empty page that still includes a next-page token is followed. A second empty page ends the list, without the "policy list was cut off" banner.
+
 ## 1.1.0 — 2026-10-15
 
 ### Access and sign-in
