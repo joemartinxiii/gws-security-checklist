@@ -6,6 +6,7 @@ import rateLimit from 'express-rate-limit';
 import path from 'path';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 import { requestLogger } from './middleware/request.middleware';
+import { requireSameOrigin } from './middleware/origin.middleware';
 import authRoutes from './routes/auth.routes';
 import hardeningRoutes from './routes/hardening.routes';
 
@@ -54,7 +55,6 @@ export function createApp(): express.Application {
     })
   );
   app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
   app.use(cookieParser());
 
   const generalLimiter = rateLimit({
@@ -66,6 +66,7 @@ export function createApp(): express.Application {
   });
 
   app.use('/api/', generalLimiter);
+  app.use('/api', requireSameOrigin);
   app.use(requestLogger);
 
   app.get('/health', (_req, res) => {
