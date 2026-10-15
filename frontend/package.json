@@ -1,6 +1,6 @@
 {
   "name": "gws-security-checklist-frontend",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Frontend for Google Workspace Security Checklist",
   "private": true,
   "type": "module",

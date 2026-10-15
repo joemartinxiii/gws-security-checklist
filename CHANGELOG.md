@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.0 — 2026-10-15
+
 ### Access and sign-in
 - Identity-Aware Proxy (IAP) sits in front of the Cloud Run service. `scripts/deploy.sh` requires `IAP_ACCESS_GROUP`, turns on `--iap` with the invoker IAM check, and lets the IAP service agent and that group through. `ALLOW_PUBLIC_INGRESS=1` keeps the old public behavior and prints a warning. With neither set, the deploy stops before it builds.
 - Stored results, waivers, and the CSV export are for super admins and for emails in `GWS_AUDIT_READERS`.
