@@ -1008,7 +1008,7 @@ export class HardeningService extends WorkspaceService {
           name: 'Confidential Mode',
           description: 'Whether users can send confidential-mode email',
           severity: 'low',
-          recommendedValue: 'ON',
+          recommendedValue: 'On',
           rationale:
             'Confidential mode gives users expiring links and copy/download restrictions for sensitive messages — a lightweight control when full DLP is unavailable.',
           recommendation:
@@ -1058,7 +1058,7 @@ export class HardeningService extends WorkspaceService {
           name: 'Warn for External Recipients',
           description: 'Warn users before replying to external recipients / sending externally',
           severity: 'high',
-          recommendedValue: 'ON',
+          recommendedValue: 'On',
           rationale:
             'A banner before sending outside the organization is one of the few controls that stops accidental disclosure of internal threads and attachments. That pattern shows up constantly in SMB incidents, and the user friction is low.',
           recommendation:
@@ -1083,7 +1083,7 @@ export class HardeningService extends WorkspaceService {
           name: 'Enhanced Pre-Delivery Scanning',
           description: 'Improved detection of suspicious content before delivery',
           severity: 'high',
-          recommendedValue: 'ON',
+          recommendedValue: 'On',
           rationale:
             'Pre-delivery scanning improves detection of malicious content before it lands in the inbox — one of the highest-value free mail defenses Google offers.',
           recommendation:
@@ -1468,7 +1468,7 @@ export class HardeningService extends WorkspaceService {
           name: 'External Invitation Warning',
           description: 'Warn users when inviting guests outside the domain',
           severity: 'low',
-          recommendedValue: 'ON',
+          recommendedValue: 'On',
           rationale:
             'A warning when adding external guests reduces accidental invites that expose meeting titles and attachments.',
           recommendation:
@@ -1603,7 +1603,7 @@ export class HardeningService extends WorkspaceService {
           name: 'External Sharing Warning',
           description: 'Warn users when they share files outside the organization',
           severity: 'medium',
-          recommendedValue: 'ON',
+          recommendedValue: 'On',
           rationale:
             'A warning at the moment of sharing catches mistakes, such as picking the wrong person from autocomplete, before a file leaves the organization.',
           recommendation:
