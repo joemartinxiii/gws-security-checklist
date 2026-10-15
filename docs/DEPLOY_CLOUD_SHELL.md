@@ -13,6 +13,7 @@ Stay in this guide until the checklist page is open in your browser.
 | Workspace **super admin** | Turn on domain-wide delegation, and run the first checklist |
 | A Google account in that Workspace | Open Cloud Console and Cloud Shell |
 | A billing account | Cloud Run, Cloud Build, and Artifact Registry |
+| A Google Group | The people who may reach the app through Identity-Aware Proxy (IAP). You create it in step 8. |
 
 You will invent a project ID in the next step. It does not exist until you create the project.
 
@@ -22,7 +23,7 @@ You will invent a project ID in the next step. It does not exist until you creat
 2. Open the project picker at the top of the page. Choose **New project**.
 3. Set the project name to `GWS Security`. The name is only a label.
 4. Under **Project ID**, click **Edit**. Type the ID you want. Use 6 to 30 characters: a letter first, then lowercase letters, numbers, and hyphens. Do not end with a hyphen. This ID is permanent, and it has to be unique across Google Cloud.
-5. If you see an organization menu, choose your Workspace organization. That lets the OAuth consent screen be Internal.
+5. If you see an organization menu, choose your Workspace organization. That lets the OAuth consent screen be Internal, and IAP needs it too.
 6. Click **Create**. Wait until the new project is selected.
 7. Open **Billing** and link a billing account to this project. If you do not have a billing account yet, create one when Google asks. The deploy will fail until billing is linked.
 
@@ -73,7 +74,7 @@ ALLOWED_DOMAINS=yourcompany.com \
 bash scripts/bootstrap.sh
 ```
 
-This enables APIs, creates the service account `security-checklist-sa`, a bucket, and Secret Manager entries. It can take a few minutes. Leave the shell open.
+This enables APIs, creates the runtime service account `security-checklist-sa`, a build service account, a bucket, the IAP service agent, and Secret Manager entries. It can take a few minutes. Leave the shell open.
 
 When it finishes, it prints **SA client ID**. That is a long number. Copy it. Domain-wide delegation needs this number.
 
@@ -122,31 +123,45 @@ The direct page is [Domain-wide delegation](https://admin.google.com/ac/owl/doma
 https://www.googleapis.com/auth/admin.directory.user.readonly,https://www.googleapis.com/auth/chrome.management.policy.readonly,https://www.googleapis.com/auth/cloud-identity.policies.readonly,https://www.googleapis.com/auth/drive.file
 ```
 
-Those scopes let the service account read users and 2-step status, read checklist policies, read Chrome browser policy, and create an export file in the signed-in admin’s Drive. It can do that only while it is acting as an admin who signed in. It cannot change users, Chrome policies, or existing Drive files.
+Those scopes let the service account read users and 2-step status, read checklist policies, read Chrome browser policy, and create an export file in the signed-in admin’s Drive. The scopes cannot change users, Chrome policies, or existing Drive files.
+
+Know what you are granting. Domain-wide delegation lets the service account impersonate any user in your Workspace for these scopes. Only the app code limits it to the admin who signed in. Anyone who can deploy a revision that runs as the service account (project Editor, or `roles/run.developer` plus `roles/iam.serviceAccountUser`), or who holds Token Creator on it, can read the Directory as a super admin, read every policy, and create and share Drive files in any user’s My Drive. Use a dedicated project, keep few principals on it, and read [Protect the runtime service account](./DEPLOY.md#protect-the-runtime-service-account).
 
 Click **Authorize**.
 
-## 8. Deploy
+## 8. Create the access group
+
+IAP lets only the members of one Google Group reach the app. Create that group first.
+
+1. Open the Admin console: **Directory → Groups → Create group**. The direct page is [Groups](https://admin.google.com/ac/groups).
+2. Name it, for example `checklist-admins@yourcompany.com`.
+3. Add the super admins who run the checklist as members.
+
+Group members still need to be Workspace admins to sign in to the app. The group only decides who can reach the sign-in page.
+
+## 9. Deploy
 
 ```bash
 cd ~/gws-security-checklist
-PROJECT_ID=YOUR_PROJECT_ID bash scripts/deploy.sh
+PROJECT_ID=YOUR_PROJECT_ID IAP_ACCESS_GROUP=checklist-admins@yourcompany.com bash scripts/deploy.sh
 ```
 
-Cloud Build and Cloud Run usually take several minutes. When it finishes, the script prints:
+Use the group email from the last step. If you set neither `IAP_ACCESS_GROUP` nor `ALLOW_PUBLIC_INGRESS=1`, the script stops before it builds anything. Do not use `ALLOW_PUBLIC_INGRESS=1` for a normal install. It leaves the service open to the internet.
+
+Cloud Build and Cloud Run usually take several minutes. The script turns on IAP, then lets the IAP service agent invoke the service and lets your group through. When it finishes, it prints:
 
 - `Deployed:` followed by the site URL
 - `OAuth redirect URI to add on the Web client:` followed by `https://…/api/auth/callback`
 
 Copy that callback URL exactly.
 
-If the script exits with an error after the first revision is created, run the same deploy command again. Sign-in stays broken until the callback secret is saved.
+If the script exits with an error after the first revision is created, run the same deploy command again. Sign-in stays broken until the redirect URI is set on the service.
 
-## 9. Finish sign-in
+## 10. Finish sign-in
 
 1. Open the OAuth Web client you created. Under **Authorized redirect URIs**, add the callback URL the script printed. Save.
-2. Open the `Deployed:` URL in a browser.
-3. Sign in with a super admin in the allowed domain.
+2. Open the `Deployed:` URL in a browser. Google's IAP sign-in page comes first. Sign in with an account in your access group.
+3. Sign in to the app with a super admin in the allowed domain.
 4. On the Security Checklist page, choose **Run checklist**.
 
 A super admin can run the checklist, waive a check, and save a CSV to Drive. Another Workspace admin in an allowed domain can view the last run and download CSV or PDF.
@@ -158,9 +173,9 @@ If Google says the redirect URI does not match, the URI on the OAuth client is d
 Open Cloud Shell again. This one command gets the latest code and deploys it:
 
 ```bash
-cd ~/gws-security-checklist && git pull && PROJECT_ID=YOUR_PROJECT_ID bash scripts/deploy.sh
+cd ~/gws-security-checklist && git pull && PROJECT_ID=YOUR_PROJECT_ID IAP_ACCESS_GROUP=checklist-admins@yourcompany.com bash scripts/deploy.sh
 ```
 
-Run it again after you change a secret. Cloud Run keeps the secret version from the last deploy until you do. If you change domain-wide delegation, paste the scope list that `deploy.sh` prints into the Admin console.
+Run it again after you add a secret version. The deploy pins each secret to its newest enabled version, so a new version reaches the service only on the next deploy. To change the allowed domains or rotate the session secret, see [Change a secret](./DEPLOY.md#change-a-secret). If you change domain-wide delegation, paste the scope list that `deploy.sh` prints into the Admin console.
 
 If Cloud Shell says the folder does not exist, the home directory was reset. Clone the repo again with the commands in step 3, then run the update command.
