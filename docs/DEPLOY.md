@@ -16,6 +16,8 @@ Local development without a tenant: [LOCAL_DEV.md](./LOCAL_DEV.md). Who can sign
 
 The Cloud Run service uses `--min-instances 0`. It does not keep an instance running when nobody is calling it.
 
+The service disables the Cloud Run invoker check so the sign-in page can load. It does not grant `allUsers` permission to invoke the service. Domain restricted sharing can stay on for the project. The app still requires a Workspace admin in an allowed domain.
+
 ## 1. Bootstrap the GCP project
 
 From a machine where `gcloud` is logged in to the project:

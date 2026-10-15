@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { authService } from '../services/auth.service';
-import { SESSION_COOKIE_NAME } from '../utils/sessionCookie';
+import { clearCookieOptions, SESSION_COOKIE_NAME, sessionCookieOptions } from '../utils/sessionCookie';
 
 export interface AuthRequest extends Request {
   user?: {
@@ -44,10 +44,17 @@ export async function authenticateSession(
       return;
     }
 
-    const user = authService.verifySessionToken(token);
-    req.user = user;
+    const session = authService.verifySessionToken(token);
+    req.user = { email: session.email, name: session.name, picture: session.picture };
+    if (req.cookies?.[SESSION_COOKIE_NAME]) {
+      const refreshed = authService.refreshSessionToken(session);
+      res.cookie(SESSION_COOKIE_NAME, refreshed.token, sessionCookieOptions(refreshed.maxAgeMs));
+    }
     next();
   } catch {
+    if (req.cookies?.[SESSION_COOKIE_NAME]) {
+      res.clearCookie(SESSION_COOKIE_NAME, clearCookieOptions());
+    }
     res.status(401).json({ error: 'Invalid or expired token' });
   }
 }

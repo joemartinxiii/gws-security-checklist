@@ -8,7 +8,23 @@ export interface ChromePolicyCheck {
   recommendedValue: any;
   status: 'pass' | 'warning' | 'fail';
   recommendation: string;
+  issues?: string[];
   ouPath?: string;
+}
+
+function chromeIssue(error: unknown): string {
+  const msg = error instanceof Error ? error.message : String(error ?? '');
+  if (/403|PERMISSION_DENIED|forbidden/i.test(msg)) {
+    return 'Chrome Policy API permission denied. A Workspace with no managed browsers often returns this.';
+  }
+  if (/404|NOT_FOUND/i.test(msg)) {
+    return 'Chrome Policy API was not found. Enable it if this Workspace manages browsers.';
+  }
+  const clean = msg.replace(/\s+/g, ' ').trim();
+  if (!clean || clean.includes('{') || clean.length > 160) {
+    return 'Chrome Policy API request failed. A Workspace with no managed browsers often cannot resolve these policies.';
+  }
+  return `Chrome Policy API: ${clean}`;
 }
 
 export class ChromePolicyService extends WorkspaceService {
@@ -57,6 +73,7 @@ export class ChromePolicyService extends WorkspaceService {
         recommendedValue: 'Enabled',
         status: 'warning',
         recommendation: 'Unable to check. Ensure Chrome Policy API is enabled and service account has proper permissions.',
+        issues: [chromeIssue(error)],
       };
     }
   }
@@ -108,6 +125,7 @@ export class ChromePolicyService extends WorkspaceService {
         recommendedValue: 'At least one security extension',
         status: 'warning',
         recommendation: 'Unable to check. Ensure Chrome Policy API is enabled and service account has proper permissions.',
+        issues: [chromeIssue(error)],
       };
     }
   }

@@ -125,10 +125,20 @@ export interface PolicyLookup {
   value: Record<string, unknown> | null;
   /**
    * Number of distinct organization-unit-scoped policies found for this type.
-   * When > 1 the setting is overridden per-OU and the returned value reflects
-   * only one scope — callers should surface that ambiguity.
+   * When > 1 the setting is overridden per-OU. The returned value is the
+   * top-level org unit. Callers should say how many other scopes differ.
    */
   scopeCount: number;
+}
+
+/**
+ * Lower numbers sort first. A policy with no org unit is customer-wide.
+ * Among org units, a higher Google sortOrder is the broader unit.
+ */
+function policyBreadth(policy: RawPolicy): number {
+  if (!policy.policyQuery?.orgUnit && !policy.policyQuery?.group) return -1_000_000;
+  const sort = policy.policyQuery?.sortOrder ?? 0;
+  return -sort;
 }
 
 /** Strip the leading `settings/` from a setting type identifier. */
@@ -175,7 +185,10 @@ export class PolicySnapshot {
     // Prefer admin-set policies over Google system defaults when both appear.
     const admin = candidates.filter((p) => p.type === 'ADMIN');
     const chosenPool = admin.length > 0 ? admin : candidates;
-    const primary = chosenPool[0];
+    // A missing org unit is the customer-wide policy. Otherwise the higher
+    // sortOrder is the broader org unit; a lower sortOrder is a more specific override.
+    const ranked = [...chosenPool].sort((a, b) => policyBreadth(a) - policyBreadth(b));
+    const primary = ranked[0];
 
     return {
       found: true,
@@ -187,6 +200,11 @@ export class PolicySnapshot {
   /** All policies matching a setting type (e.g. for rule.dlp counts). */
   all(settingType: string): RawPolicy[] {
     return this.byType.get(settingType) ?? [];
+  }
+
+  /** Every setting type present in this snapshot. */
+  settingTypes(): string[] {
+    return [...this.byType.keys()];
   }
 }
 

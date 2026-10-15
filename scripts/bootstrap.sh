@@ -34,17 +34,21 @@ CHECKLIST_BUCKET="${CHECKLIST_BUCKET:-${PROJECT_ID}-security-checklist}"
 log "Enabling APIs..."
 gcloud services enable "${GCP_APIS[@]}" --project="${PROJECT_ID}" --quiet
 
+ensure_cloud_build_access "${PROJECT_ID}"
+
 if ! gcloud iam service-accounts describe "${RUNTIME_SA_EMAIL}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud iam service-accounts create "${RUNTIME_SA}" \
     --display-name="Security Checklist runtime" \
     --project="${PROJECT_ID}"
 fi
 
-gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SA_EMAIL}" \
+wait_for_service_account "${RUNTIME_SA_EMAIL}" "${PROJECT_ID}"
+
+retry_iam gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SA_EMAIL}" \
   --member="serviceAccount:${RUNTIME_SA_EMAIL}" \
   --role="roles/iam.serviceAccountTokenCreator" \
   --project="${PROJECT_ID}" \
-  --quiet >/dev/null
+  --quiet
 
 revoke_project_run_invoker "${PROJECT_ID}" "serviceAccount:${RUNTIME_SA_EMAIL}"
 
@@ -64,11 +68,11 @@ ensure_secret() {
   if ! gcloud secrets describe "${name}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
     echo -n "${value}" | gcloud secrets create "${name}" --project="${PROJECT_ID}" --data-file=- --quiet
   fi
-  gcloud secrets add-iam-policy-binding "${name}" \
+  retry_iam gcloud secrets add-iam-policy-binding "${name}" \
     --member="serviceAccount:${RUNTIME_SA_EMAIL}" \
     --role="roles/secretmanager.secretAccessor" \
     --project="${PROJECT_ID}" \
-    --quiet >/dev/null
+    --quiet
 }
 
 JWT="$(openssl rand -hex 32)"

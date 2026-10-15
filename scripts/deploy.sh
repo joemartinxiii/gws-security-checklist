@@ -49,17 +49,21 @@ if ! gcloud iam service-accounts describe "${RUNTIME_SA_EMAIL}" --project="${PRO
     --project="${PROJECT_ID}"
 fi
 
+wait_for_service_account "${RUNTIME_SA_EMAIL}" "${PROJECT_ID}"
+
 # Keyless DWD: the runtime SA must be able to signJwt as itself.
-gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SA_EMAIL}" \
+retry_iam gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SA_EMAIL}" \
   --member="serviceAccount:${RUNTIME_SA_EMAIL}" \
   --role="roles/iam.serviceAccountTokenCreator" \
   --project="${PROJECT_ID}" \
-  --quiet >/dev/null
+  --quiet
 
 revoke_project_run_invoker "${PROJECT_ID}" "serviceAccount:${RUNTIME_SA_EMAIL}"
 
 log "Ensuring bucket gs://${CHECKLIST_BUCKET}..."
 ensure_checklist_bucket "${PROJECT_ID}" "${CHECKLIST_BUCKET}" "${REGION}" "serviceAccount:${RUNTIME_SA_EMAIL}"
+
+ensure_cloud_build_access "${PROJECT_ID}"
 
 log "Building image..."
 gcloud builds submit "${ROOT}" \
@@ -67,6 +71,10 @@ gcloud builds submit "${ROOT}" \
   --tag "${IMAGE}" \
   --quiet
 
+# Do not grant allUsers roles/run.invoker. Domain restricted sharing blocks that
+# grant and the workaround turns the restriction off for the whole project.
+# Disabling the invoker check opens only this service. The app still requires
+# a Workspace admin session.
 log "Deploying Cloud Run service..."
 gcloud run deploy "${CLOUD_RUN_SERVICE}" \
   --image "${IMAGE}" \
@@ -81,7 +89,7 @@ gcloud run deploy "${CLOUD_RUN_SERVICE}" \
   --service-account "${RUNTIME_SA_EMAIL}" \
   --set-env-vars "NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},SERVICE_ACCOUNT_EMAIL=${RUNTIME_SA_EMAIL},CHECKLIST_BUCKET=${CHECKLIST_BUCKET}" \
   --set-secrets "GOOGLE_CLIENT_ID=checklist-oauth-client-id:latest,GOOGLE_CLIENT_SECRET=checklist-oauth-client-secret:latest,GOOGLE_REDIRECT_URI=checklist-oauth-redirect-uri:latest,JWT_SECRET=checklist-jwt-secret:latest,WORKSPACE_DOMAIN=checklist-workspace-domain:latest,GWS_ALLOWED_DOMAINS=checklist-allowed-domains:latest" \
-  --allow-unauthenticated \
+  --no-invoker-iam-check \
   --quiet
 
 SERVICE_URL="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" --region "${REGION}" --project="${PROJECT_ID}" --format='value(status.url)')"
@@ -97,6 +105,7 @@ if gcloud secrets describe checklist-oauth-redirect-uri --project="${PROJECT_ID}
   log "Updating service with CORS_ORIGIN and redirect secret version ${REDIRECT_VER}..."
   if ! gcloud run services update "${CLOUD_RUN_SERVICE}" \
     --region "${REGION}" --project="${PROJECT_ID}" \
+    --no-invoker-iam-check \
     --set-env-vars "NODE_ENV=production,GCP_PROJECT_ID=${PROJECT_ID},SERVICE_ACCOUNT_EMAIL=${RUNTIME_SA_EMAIL},CORS_ORIGIN=${SERVICE_URL},CHECKLIST_BUCKET=${CHECKLIST_BUCKET}" \
     --update-secrets "GOOGLE_REDIRECT_URI=checklist-oauth-redirect-uri:${REDIRECT_VER}" \
     --quiet; then

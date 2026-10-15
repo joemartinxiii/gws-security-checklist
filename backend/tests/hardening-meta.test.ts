@@ -4,6 +4,7 @@ import {
   isTransientPolicyFailure,
   countEnforced2sv,
   summarize2svCoverage,
+  hardeningService,
 } from '../src/services/hardening.service';
 import { PolicySnapshot } from '../src/services/policy.service';
 
@@ -99,5 +100,161 @@ describe('isTransientPolicyFailure', () => {
     expect(isTransientPolicyFailure({ available: false, code: 'http_503' })).toBe(true);
     expect(isTransientPolicyFailure({ available: false, code: 'http_403' })).toBe(false);
     expect(isTransientPolicyFailure({ available: false, code: 'unavailable' })).toBe(false);
+  });
+});
+
+describe('PolicySnapshot org unit choice', () => {
+  test('prefers the broader org unit and counts the others', () => {
+    const snap = new PolicySnapshot(
+      [
+        {
+          setting: {
+            type: 'settings/gmail.auto_forwarding',
+            value: { enableAutoForwarding: false },
+          },
+          type: 'ADMIN',
+          policyQuery: { orgUnit: 'orgUnits/child', sortOrder: 1 },
+        },
+        {
+          setting: {
+            type: 'settings/gmail.auto_forwarding',
+            value: { enableAutoForwarding: true },
+          },
+          type: 'ADMIN',
+          policyQuery: { orgUnit: 'orgUnits/root', sortOrder: 10 },
+        },
+      ],
+      true
+    );
+    const lookup = snap.get('gmail.auto_forwarding');
+    expect(lookup.value).toEqual({ enableAutoForwarding: true });
+    expect(lookup.scopeCount).toBe(2);
+  });
+});
+
+describe('published policy defaults', () => {
+  const service = hardeningService as unknown as {
+    policyCheck: (...args: unknown[]) => {
+      status: string;
+      source: string;
+      currentValue: string;
+      issues?: string[];
+    };
+    appsControlChecks: (snapshot: PolicySnapshot) => Array<{
+      id: string;
+      status: string;
+      currentValue: string;
+      issues?: string[];
+    }>;
+    adminAlertCheck: (snapshot: PolicySnapshot) => {
+      status: string;
+      currentValue: string;
+      issues?: string[];
+    };
+  };
+
+  const meta = {
+    id: 'sample',
+    category: 'Email',
+    name: 'Sample',
+    description: 'Sample',
+    severity: 'medium' as const,
+    recommendedValue: 'Off',
+    rationale: 'Why',
+    recommendation: 'Do this',
+  };
+
+  test('scores a missing auto-forwarding policy as the Google default', () => {
+    const check = service.policyCheck(
+      new PolicySnapshot([], true),
+      meta,
+      'gmail.auto_forwarding',
+      (value: { enableAutoForwarding?: boolean }) => ({
+        status: value.enableAutoForwarding ? 'info' : 'pass',
+        currentValue: value.enableAutoForwarding ? 'Allowed' : 'Off',
+      }),
+      { defaultValue: { enableAutoForwarding: true } }
+    );
+    expect(check.status).toBe('info');
+    expect(check.source).toBe('auto');
+    expect(check.currentValue).toBe('Allowed (Google default)');
+    expect(check.issues?.join(' ')).toMatch(/published default/i);
+  });
+
+  test('says how many other org units differ', () => {
+    const snap = new PolicySnapshot(
+      [
+        {
+          setting: { type: 'settings/gmail.auto_forwarding', value: { enableAutoForwarding: false } },
+          type: 'ADMIN',
+          policyQuery: { orgUnit: 'orgUnits/root', sortOrder: 10 },
+        },
+        {
+          setting: { type: 'settings/gmail.auto_forwarding', value: { enableAutoForwarding: true } },
+          type: 'ADMIN',
+          policyQuery: { orgUnit: 'orgUnits/child', sortOrder: 1 },
+        },
+      ],
+      true
+    );
+    const check = service.policyCheck(
+      snap,
+      meta,
+      'gmail.auto_forwarding',
+      () => ({ status: 'pass', currentValue: 'Off' })
+    );
+    expect(check.issues?.join(' ')).toMatch(/top-level org unit/);
+    expect(check.issues?.join(' ')).toMatch(/1 other org unit differs/);
+  });
+
+  test('does not invent additional services when none are saved', () => {
+    const [core, extra] = service
+      .appsControlChecks(new PolicySnapshot([], true))
+      .filter((check) => check.id === 'core-apps' || check.id === 'additional-apps');
+    expect(core.status).toBe('info');
+    expect(extra.status).toBe('info');
+    expect(extra.currentValue).toMatch(/No explicit service changes/);
+  });
+
+  test('warns when an additional service is explicitly on', () => {
+    const snap = new PolicySnapshot(
+      [
+        {
+          setting: { type: 'settings/blogger.service_status', value: { serviceState: 'ENABLED' } },
+          type: 'ADMIN',
+        },
+        {
+          setting: { type: 'settings/gmail.service_status', value: { serviceState: 'ENABLED' } },
+          type: 'ADMIN',
+        },
+      ],
+      true
+    );
+    const checks = service.appsControlChecks(snap);
+    expect(checks.find((check) => check.id === 'additional-apps')?.status).toBe('warning');
+    expect(checks.find((check) => check.id === 'additional-apps')?.currentValue).toMatch(/Blogger/);
+    expect(checks.find((check) => check.id === 'core-apps')?.status).toBe('info');
+  });
+
+  test('reads admin alert rules instead of calling them unpublished', () => {
+    const snap = new PolicySnapshot(
+      [
+        {
+          setting: {
+            type: 'settings/rule.system_defined_alerts',
+            value: {
+              displayName: 'Admin password reset',
+              state: 'ACTIVE',
+              action: { alertCenterConfig: { status: 'ENABLED' } },
+            },
+          },
+          type: 'ADMIN',
+        },
+      ],
+      true
+    );
+    const check = service.adminAlertCheck(snap);
+    expect(check.status).toBe('pass');
+    expect(check.currentValue).toBe('1 active, 0 inactive');
   });
 });

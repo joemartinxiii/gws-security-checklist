@@ -7,13 +7,12 @@ export const SESSION_COOKIE_NAME = 'sessionToken';
 export const OAUTH_STATE_COOKIE_NAME = 'oauth_state';
 
 /**
- * Parse JWT_EXPIRES_IN-style durations into milliseconds for cookie Max-Age.
- * Supports plain seconds, or values like 24h / 8h / 30m / 3600s. Default 8h.
+ * Parse durations into milliseconds.
+ * Supports plain seconds, or values like 24h / 8h / 15m / 3600s.
  */
-export function sessionMaxAgeMs(): number {
-  const raw = (process.env.JWT_EXPIRES_IN || '8h').trim();
-  const m = raw.match(/^(\d+)([smhd])?$/i);
-  if (!m) return 8 * 60 * 60 * 1000;
+export function parseDurationMs(raw: string, fallbackMs: number): number {
+  const m = raw.trim().match(/^(\d+)([smhd])?$/i);
+  if (!m) return fallbackMs;
   const n = parseInt(m[1], 10);
   const unit = (m[2] || 's').toLowerCase();
   const mult =
@@ -21,19 +20,33 @@ export function sessionMaxAgeMs(): number {
   return n * mult;
 }
 
+/** Idle window. The browser cookie and the token both use this. Default 15 minutes. */
+export function idleTimeoutMs(): number {
+  return parseDurationMs(process.env.IDLE_TIMEOUT || '15m', 15 * 60 * 1000);
+}
+
+/** Hard stop from the original sign-in, even if the admin keeps working. Default 8 hours. */
+export function absoluteSessionMs(): number {
+  return parseDurationMs(process.env.JWT_EXPIRES_IN || '8h', 8 * 60 * 60 * 1000);
+}
+
+export function sessionMaxAgeMs(): number {
+  return idleTimeoutMs();
+}
+
 /**
  * Cookie options for the app session.
  * - Production (Cloud Run HTTPS, same-origin SPA+API): Secure + HttpOnly + SameSite=Lax
  * - Development: Secure=false so localhost over HTTP works
  */
-export function sessionCookieOptions(): CookieOptions {
+export function sessionCookieOptions(maxAgeMs: number = sessionMaxAgeMs()): CookieOptions {
   const isProd = process.env.NODE_ENV === 'production';
   return {
     httpOnly: true,
     secure: isProd,
     sameSite: 'lax',
     path: '/',
-    maxAge: sessionMaxAgeMs(),
+    maxAge: maxAgeMs,
   };
 }
 

@@ -4,7 +4,7 @@ What this app checks, how it stores results, and how to run it.
 
 Deploy and scopes: [docs/DEPLOY.md](docs/DEPLOY.md), [SECURITY.md](SECURITY.md).
 
-The catalog mirrors Google’s published [Security checklists](https://knowledge.workspace.google.com/admin/security/security-checklists). Most non-DNS settings are read from the **Cloud Identity Policy API**; others are **manual** (Admin console link) when Google has no API.
+The catalog mirrors Google’s published [Security checklists](https://knowledge.workspace.google.com/admin/security/security-checklists). Most non-DNS settings are read from the **Cloud Identity Policy API**. When Google returns no saved policy, the check scores the published default and labels the current value “Google default.” Settings Google does not publish stay **manual**.
 
 Legend: **auto** (Policy API / DNS / user proxy / Chrome Policy) · **manual** (verify in console)
 
@@ -22,27 +22,27 @@ When the Policy API is unavailable (API off, missing DWD scope, or caller not su
 ### Email
 - **Auto** — SPF / DKIM / DMARC (DNS)
 - **Manual** — Email read receipts
-- **Auto** — Mail delegation, confidential mode, restrict delivery, enhanced pre-delivery scanning, spam override lists, auto-forwarding
-- **Manual** — Warn for external recipients
+- **Auto** — Mail delegation, confidential mode, restrict delivery, enhanced pre-delivery scanning, spam override lists, auto-forwarding, warn for external recipients
 - **Auto** — Attachment safety, links/images, spoofing & authentication
 
 ### Calendar
 - **Auto** — Primary/secondary external sharing max, external invitation warning
 
 ### Drive
-- **Auto** — External sharing, general access default, shared drive creation, Drive for desktop, DLP (Enterprise if rules exist)
-- **Manual** — Offline access, Docs/Sheets add-ons
+- **Auto** — External sharing, general access default, shared drive creation, Drive for desktop, Docs/Sheets add-ons, DLP (Enterprise if rules exist). Sharing suggestions use Google’s published suggestions default. Link sharing does not, because the published sharing-mode default is not confirmed.
+- **Manual** — Offline access (Google does not publish this setting)
 
 ### Chrome managed browsers
-- **Auto** — Browser updates, company-enforced extensions (Chrome Policy API)
-- **Manual** — Admin alerts
+- **Auto** — Browser updates, company-enforced extensions (Chrome Policy API). A Workspace with no managed browsers shows the API error.
+- **Auto** — Admin alerts (`rule.system_defined_alerts`)
 
 ### Login challenges & data download
 - **Auto** — Login challenges / employee ID, Google Takeout, less secure apps
-- **Manual** — Post-SSO verification
+- **Manual** — Post-SSO verification (Google does not publish this setting)
 
 ### Apps control
-- **Manual** — Context-Aware Access, core apps, additional apps (per-OU decisions)
+- **Manual** — Context-Aware Access (Enterprise)
+- **Auto** — Core apps and additional apps, from saved `service_status` policies. No saved policy means Google defaults apply. It does not invent a service as on.
 
 ### Severity
 

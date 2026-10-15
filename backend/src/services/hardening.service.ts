@@ -6,6 +6,7 @@ import {
   PolicySnapshot,
   PolicyLookup,
   readBool,
+  readField,
   readString,
 } from './policy.service';
 import type { PolicyApiMeta, Severity, HardeningStatistics } from './securityAuditStore';
@@ -71,8 +72,12 @@ const HUMAN_ENUM: Record<string, string> = {
   ALLOWLISTED_DOMAINS: 'Allowlisted domains only',
   ALLOWED: 'On (anyone external)',
   PRIVATE_TO_OWNER: 'Private to owner',
+  LINK_SHARING_PRIVATE: 'Private to owner',
   PRIMARY_AUDIENCE_WITH_LINK: 'Anyone in org with link',
   PRIMARY_AUDIENCE_WITH_LINK_OR_SEARCH: 'Org with link or search',
+  RECIPIENTS_ONLY: 'Recipients only',
+  RECIPIENTS_OR_AUDIENCE: 'Recipients or audience',
+  RECIPIENTS_OR_AUDIENCE_OR_PUBLIC: 'Recipients, audience, or public',
   ALL_ELIGIBLE_USERS: 'All users',
   ELIGIBLE_INTERNAL_USERS: 'Internal users',
   NONE: 'None',
@@ -81,6 +86,47 @@ const HUMAN_ENUM: Record<string, string> = {
 function humanEnum(v: string | undefined): string {
   if (!v) return 'Unknown';
   return HUMAN_ENUM[v] ?? v;
+}
+
+const CORE_SERVICE_NAMES: Record<string, string> = {
+  appsheet: 'AppSheet',
+  calendar: 'Calendar',
+  cloud_search: 'Cloud Search',
+  drive_and_docs: 'Drive and Docs',
+  gmail: 'Gmail',
+  chat: 'Chat',
+  meet: 'Meet',
+  vault: 'Vault',
+  voice: 'Voice',
+  groups_for_business: 'Groups',
+  keep: 'Keep',
+  sites: 'Sites',
+  tasks: 'Tasks',
+};
+
+function serviceEnabled(value: Record<string, unknown> | null | undefined): boolean | undefined {
+  const state = readString(value, 'serviceState');
+  if (state) {
+    const upper = state.toUpperCase();
+    if (upper.includes('DISABLED') || upper === 'OFF') return false;
+    if (upper.includes('ENABLED') || upper === 'ON') return true;
+    return undefined;
+  }
+  return readBool(value, 'serviceStatus', 'enabled', 'enableService');
+}
+
+function joinNames(names: string[]): string {
+  if (names.length <= 12) return names.join(', ');
+  return `${names.slice(0, 12).join(', ')} + ${names.length - 12} more`;
+}
+
+function serviceLabel(id: string): string {
+  if (CORE_SERVICE_NAMES[id]) return CORE_SERVICE_NAMES[id];
+  return id
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 export interface TwoSvCount {
@@ -235,7 +281,7 @@ export class HardeningService extends WorkspaceService {
     meta: CheckMeta,
     settingType: string,
     evaluate: Evaluator,
-    options: { evaluateOnMissing?: boolean } = {}
+    options: { evaluateOnMissing?: boolean; defaultValue?: Record<string, unknown> } = {}
   ): HardeningCheck {
     const base = this.baseFrom(meta);
 
@@ -253,6 +299,19 @@ export class HardeningService extends WorkspaceService {
 
     const lookup = snapshot.get(settingType);
     if (!lookup.found && !options.evaluateOnMissing) {
+      if (options.defaultValue) {
+        const assumed: PolicyLookup = { found: true, value: options.defaultValue, scopeCount: 0 };
+        const result = evaluate(options.defaultValue, assumed);
+        const issues = result.issues ? [...result.issues] : [];
+        issues.push('No admin policy is saved. This value is Google’s published default.');
+        return {
+          ...base,
+          status: result.status,
+          source: 'auto',
+          currentValue: `${result.currentValue} (Google default)`,
+          issues,
+        };
+      }
       return {
         ...base,
         status: 'manual',
@@ -267,8 +326,9 @@ export class HardeningService extends WorkspaceService {
     const result = evaluate(lookup.value ?? {}, lookup);
     const issues = result.issues ? [...result.issues] : [];
     if (lookup.scopeCount > 1) {
+      const others = lookup.scopeCount - 1;
       issues.push(
-        `Overridden across ${lookup.scopeCount} org units — showing one scope; review OU differences with the client.`
+        `Showing the top-level org unit. ${others} other org unit${others === 1 ? ' differs' : 's differ'}.`
       );
     }
 
@@ -439,10 +499,10 @@ export class HardeningService extends WorkspaceService {
           rationale:
             'Read receipts can leak when a message was opened and are rarely required for SMB operations. They add little business value and some privacy friction.',
           recommendation:
-            'Set to Do not allow unless the client has a documented workflow that depends on receipts. Confirm in Admin console (not available via Policy API).',
+            'Set to Do not allow unless the client has a documented workflow that depends on receipts. Confirm in the Admin console.',
           adminConsoleUrl: gmailUserSettings,
         },
-        'Not exposed by the Policy API — verify in Admin console.'
+        'Google does not publish this setting. Verify it in the Admin console.'
       ),
       this.policyCheck(
         snapshot,
@@ -518,7 +578,8 @@ export class HardeningService extends WorkspaceService {
         },
         { evaluateOnMissing: true }
       ),
-      this.manualCheck(
+      this.policyCheck(
+        snapshot,
         {
           id: 'gmail-external-warning',
           category: 'Email',
@@ -529,10 +590,18 @@ export class HardeningService extends WorkspaceService {
           rationale:
             'A banner before sending outside the organization is one of the few controls that stops accidental disclosure of internal threads and attachments. That pattern shows up constantly in SMB incidents, and the user friction is low.',
           recommendation:
-            'Turn the external-recipient warning ON. Confirm in Admin console (not available via Policy API).',
+            'Turn the external-recipient warning ON.',
           adminConsoleUrl: gmailEndUser,
         },
-        'Not exposed by the Policy API — verify in Admin console.'
+        'gmail.external_recipient_warning',
+        (value) => {
+          const enabled = readBool(value, 'enabled');
+          return {
+            status: enabled ? 'pass' : 'warning',
+            currentValue: enabled ? 'On' : 'Off',
+          };
+        },
+        { defaultValue: { enabled: true } }
       ),
       this.policyCheck(
         snapshot,
@@ -616,7 +685,8 @@ export class HardeningService extends WorkspaceService {
             status: enabled ? 'info' : 'pass',
             currentValue: enabled ? 'Allowed' : 'Off',
           };
-        }
+        },
+        { defaultValue: { enableAutoForwarding: true } }
       ),
     ];
   }
@@ -749,7 +819,8 @@ export class HardeningService extends WorkspaceService {
           adminConsoleUrl: calSharing,
         },
         'calendar.primary_calendar_max_allowed_external_sharing',
-        externalSharingEval
+        externalSharingEval,
+        { defaultValue: { maxAllowedExternalSharing: 'EXTERNAL_FREE_BUSY_ONLY' } }
       ),
       this.policyCheck(
         snapshot,
@@ -767,7 +838,8 @@ export class HardeningService extends WorkspaceService {
           adminConsoleUrl: calSharing,
         },
         'calendar.secondary_calendar_max_allowed_external_sharing',
-        externalSharingEval
+        externalSharingEval,
+        { defaultValue: { maxAllowedExternalSharing: 'EXTERNAL_ALL_INFO_READ_ONLY' } }
       ),
       this.policyCheck(
         snapshot,
@@ -791,7 +863,8 @@ export class HardeningService extends WorkspaceService {
             status: warn ? 'pass' : 'warning',
             currentValue: warn ? 'On' : 'Off',
           };
-        }
+        },
+        { defaultValue: { warnOnInvite: true } }
       ),
     ];
   }
@@ -845,11 +918,13 @@ export class HardeningService extends WorkspaceService {
         'drive_and_docs.general_access_default',
         (value) => {
           const access = readString(value, 'defaultFileAccess');
+          const privateToOwner = access === 'PRIVATE_TO_OWNER' || access === 'LINK_SHARING_PRIVATE';
           return {
-            status: access === 'PRIVATE_TO_OWNER' ? 'pass' : 'warning',
+            status: privateToOwner ? 'pass' : 'warning',
             currentValue: humanEnum(access),
           };
-        }
+        },
+        { defaultValue: { defaultFileAccess: 'LINK_SHARING_PRIVATE' } }
       ),
       this.policyCheck(
         snapshot,
@@ -897,7 +972,8 @@ export class HardeningService extends WorkspaceService {
             status: 'info',
             currentValue: humanEnum(suggestions),
           };
-        }
+        },
+        { defaultValue: { accessCheckerSuggestions: 'RECIPIENTS_OR_AUDIENCE_OR_PUBLIC' } }
       ),
       this.manualCheck(
         {
@@ -910,10 +986,10 @@ export class HardeningService extends WorkspaceService {
           rationale:
             'Offline copies on laptops increase data-at-rest exposure if a device is lost or stolen without strong disk encryption and MDM.',
           recommendation:
-            'Disable offline access org-wide when possible. If field staff need it, enable per OU and ensure device encryption/MDM. Confirm in Admin console (not via Policy API).',
+            'Disable offline access org-wide when possible. If field staff need it, enable per OU and ensure device encryption/MDM. Confirm in the Admin console.',
           adminConsoleUrl: features,
         },
-        'Not exposed by the Policy API — verify in Admin console.'
+        'Google does not publish this setting. Verify it in the Admin console.'
       ),
       this.policyCheck(
         snapshot,
@@ -939,7 +1015,8 @@ export class HardeningService extends WorkspaceService {
           };
         }
       ),
-      this.manualCheck(
+      this.policyCheck(
+        snapshot,
         {
           id: 'drive-addons',
           category: 'Google Drive',
@@ -950,10 +1027,26 @@ export class HardeningService extends WorkspaceService {
           rationale:
             'Marketplace add-ons receive document access and can become a supply-chain or data-exfiltration path if users install freely.',
           recommendation:
-            'Block open add-on installs; deploy only reviewed add-ons. Confirm in Admin console (not via Policy API).',
+            'Block open add-on installs. Deploy only add-ons that have been reviewed.',
           adminConsoleUrl: 'https://admin.google.com/ac/apps/editors',
         },
-        'Not exposed by the Policy API — verify in Admin console.'
+        'workspace_marketplace.apps_access_options',
+        (value) => {
+          const level = readString(value, 'accessLevel');
+          const limited = level === 'ALLOW_NONE' || level === 'ALLOW_LISTED_APPS';
+          const label =
+            level === 'ALLOW_NONE'
+              ? 'No Marketplace apps'
+              : level === 'ALLOW_LISTED_APPS'
+                ? 'Allowlist only'
+                : level === 'ALLOW_ALL'
+                  ? 'All Marketplace apps'
+                  : humanEnum(level);
+          return {
+            status: limited ? 'pass' : level === 'ALLOW_ALL' ? 'warning' : 'manual',
+            currentValue: label,
+          };
+        }
       ),
       this.policyCheck(
         snapshot,
@@ -1028,10 +1121,10 @@ export class HardeningService extends WorkspaceService {
           rationale:
             'SSO consolidates access: if the IdP session is weak or stolen, high-risk Google apps need an additional check. Post-SSO verification closes that gap.',
           recommendation:
-            'If the client uses SSO, enable post-SSO verification for high-risk apps. If no SSO, mark not applicable. Confirm in Admin console (not via Policy API).',
+            'If the client uses SSO, enable post-SSO verification for high-risk apps. If no SSO, mark not applicable. Confirm in the Admin console.',
           adminConsoleUrl: 'https://admin.google.com/ac/security/sso',
         },
-        'Not exposed by the Policy API — verify in Admin console.'
+        'Google does not publish this setting. Verify it in the Admin console.'
       ),
     ];
   }
@@ -1099,14 +1192,33 @@ export class HardeningService extends WorkspaceService {
             status: allow === false ? 'pass' : allow === true ? 'fail' : 'manual',
             currentValue: allow === false ? 'Disabled' : allow === true ? 'Allowed' : 'Unknown',
           };
-        }
+        },
+        { defaultValue: { allowLessSecureApps: false } }
       ),
     ];
   }
 
   // --- Apps Control ---------------------------------------------------------
 
-  private appsControlChecks(): HardeningCheck[] {
+  private appsControlChecks(snapshot: PolicySnapshot): HardeningCheck[] {
+    const rows = snapshot.settingTypes()
+      .filter((type) => type.endsWith('.service_status'))
+      .map((type) => {
+        const id = type.slice(0, -'.service_status'.length);
+        const lookup = snapshot.get(type);
+        return {
+          id,
+          name: serviceLabel(id),
+          core: id in CORE_SERVICE_NAMES,
+          enabled: serviceEnabled(lookup.value),
+        };
+      })
+      .filter((row) => row.id !== 'takeout');
+
+    const core = rows.filter((row) => row.core);
+    const extra = rows.filter((row) => !row.core);
+    const expectedCore = new Set(['gmail', 'drive_and_docs', 'calendar']);
+
     return [
       this.manualCheck(
         {
@@ -1124,7 +1236,7 @@ export class HardeningService extends WorkspaceService {
         },
         'Enterprise-only and context-specific — verify in Admin console.'
       ),
-      this.manualCheck(
+      this.serviceCatalogCheck(
         {
           id: 'core-apps',
           category: 'Apps Control',
@@ -1138,9 +1250,12 @@ export class HardeningService extends WorkspaceService {
             'Turn off core apps (Drive, Gmail, Meet, etc.) for OUs that should not have them. Document the service catalog with the client.',
           adminConsoleUrl: 'https://admin.google.com/ac/appslist/core',
         },
-        'Per-OU/service decision — verify in Admin console.'
+        snapshot,
+        core,
+        (listed) => listed.some((row) => expectedCore.has(row.id) && row.enabled === false),
+        'info'
       ),
-      this.manualCheck(
+      this.serviceCatalogCheck(
         {
           id: 'additional-apps',
           category: 'Apps Control',
@@ -1154,9 +1269,123 @@ export class HardeningService extends WorkspaceService {
             'Disable additional Google services org-wide unless a specific OU has an approved need. Review annually with the client.',
           adminConsoleUrl: 'https://admin.google.com/ac/appslist/additional',
         },
-        'Per-OU/service decision — verify in Admin console.'
+        snapshot,
+        extra,
+        (listed) => listed.some((row) => row.enabled === true),
+        'pass'
       ),
     ];
+  }
+
+  private serviceCatalogCheck(
+    meta: CheckMeta,
+    snapshot: PolicySnapshot,
+    rows: Array<{ id: string; name: string; enabled: boolean | undefined }>,
+    isFinding: (rows: Array<{ id: string; name: string; enabled: boolean | undefined }>) => boolean,
+    quietStatus: 'info' | 'pass'
+  ): HardeningCheck {
+    const base = this.baseFrom(meta);
+    if (!snapshot.available) {
+      return {
+        ...base,
+        status: 'manual',
+        source: 'manual',
+        currentValue: 'Manual review',
+        issues: [
+          'Automated read unavailable — verify this setting in the Admin console until Policy API access is restored.',
+        ],
+      };
+    }
+    if (rows.length === 0) {
+      return {
+        ...base,
+        status: 'info',
+        source: 'auto',
+        currentValue: 'No explicit service changes',
+        issues: ['No saved on/off policy for these services. Google defaults apply.'],
+      };
+    }
+    const on = rows.filter((row) => row.enabled === true);
+    const off = rows.filter((row) => row.enabled === false);
+    const unknown = rows.filter((row) => row.enabled === undefined);
+    const parts = [
+      on.length ? `On: ${joinNames(on.map((row) => row.name))}` : '',
+      off.length ? `Off: ${joinNames(off.map((row) => row.name))}` : '',
+      unknown.length ? `Unparsed: ${joinNames(unknown.map((row) => row.name))}` : '',
+    ].filter(Boolean);
+    return {
+      ...base,
+      status: isFinding(rows) || unknown.length > 0 ? 'warning' : quietStatus,
+      source: 'auto',
+      currentValue: parts.join('. '),
+    };
+  }
+
+  private adminAlertCheck(snapshot: PolicySnapshot): HardeningCheck {
+    const meta: CheckMeta = {
+      id: 'chrome-admin-alerts',
+      category: 'Chrome Managed Browsers',
+      name: 'Admin Alerts',
+      description: 'Alerting for sensitive admin changes',
+      severity: 'high',
+      recommendedValue: 'Alerts on',
+      rationale:
+        'Admin password resets and new super admins are high-impact events. Without alerts, compromise of an admin account can go unnoticed.',
+      recommendation:
+        'Turn on alert rules for admin password resets, new admin assignments, and other sensitive actions. Route to a monitored MSP/client mailbox.',
+      adminConsoleUrl: 'https://admin.google.com/ac/reporting/rules',
+    };
+    const base = this.baseFrom(meta);
+    if (!snapshot.available) {
+      return {
+        ...base,
+        status: 'manual',
+        source: 'manual',
+        currentValue: 'Manual review',
+        issues: [
+          'Automated read unavailable — verify this setting in the Admin console until Policy API access is restored.',
+        ],
+      };
+    }
+
+    const rules = snapshot.all('rule.system_defined_alerts').map((policy) => {
+      const value = policy.setting?.value ?? {};
+      const name = readString(value, 'displayName') || 'Unnamed alert';
+      const state = (readString(value, 'state') || '').toUpperCase();
+      const action = readField(value, 'action');
+      let center = '';
+      if (action && typeof action === 'object') {
+        const config = readField(action as Record<string, unknown>, 'alertCenterConfig');
+        if (config && typeof config === 'object') {
+          center = (readString(config as Record<string, unknown>, 'status') || '').toUpperCase();
+        }
+      }
+      const active = state === 'ACTIVE' && (center === '' || center === 'ENABLED');
+      return { name, active };
+    });
+
+    if (rules.length === 0) {
+      return {
+        ...base,
+        status: 'manual',
+        source: 'manual',
+        currentValue: 'None returned',
+        issues: ['No system alert rules were returned. Confirm the alert center in the Admin console.'],
+      };
+    }
+
+    const active = rules.filter((rule) => rule.active);
+    const adminRelated = active.filter((rule) => /admin|password|privilege|super/i.test(rule.name));
+    return {
+      ...base,
+      status: adminRelated.length > 0 ? 'pass' : active.length > 0 ? 'warning' : 'fail',
+      source: 'auto',
+      currentValue: `${active.length} active, ${rules.length - active.length} inactive`,
+      issues:
+        adminRelated.length > 0
+          ? undefined
+          : ['No active rule is named for admin, password, or privilege changes. Confirm those alerts in the alert center.'],
+    };
   }
 
   private dnsCheckToHardening(record: {
@@ -1314,6 +1543,7 @@ export class HardeningService extends WorkspaceService {
           recommendation: isUpdates
             ? 'Ensure browser updates are enabled for managed Chrome. Investigate unknown status if Chrome Policy API access is missing.'
             : 'Deploy a small allowlist of security-relevant extensions (e.g. password manager). Unknown status usually means Chrome Policy API is not enabled or authorized.',
+          issues: chromeCheck.issues,
         });
       });
     } catch (error: unknown) {
@@ -1335,25 +1565,7 @@ export class HardeningService extends WorkspaceService {
       });
     }
 
-    // Chrome — Admin alerts (manual)
-    checks.push(
-      this.manualCheck(
-        {
-          id: 'chrome-admin-alerts',
-          category: 'Chrome Managed Browsers',
-          name: 'Admin Alerts',
-          description: 'Alerting for sensitive admin changes',
-          severity: 'high',
-          recommendedValue: 'Alerts on',
-          rationale:
-            'Admin password resets and new super admins are high-impact events. Without alerts, compromise of an admin account can go unnoticed.',
-          recommendation:
-            'Turn on alert rules for admin password resets, new admin assignments, and other sensitive actions. Route to a monitored MSP/client mailbox.',
-          adminConsoleUrl: 'https://admin.google.com/ac/reporting/rules',
-        },
-        'Alert-rule config is not exposed by the Policy API — verify in Admin console.'
-      )
-    );
+    checks.push(this.adminAlertCheck(snapshot));
 
     // Login challenges
     checks.push(...this.loginChallengeChecks(snapshot));
@@ -1362,7 +1574,7 @@ export class HardeningService extends WorkspaceService {
     checks.push(...this.dataDownloadChecks(snapshot));
 
     // Apps Control
-    checks.push(...this.appsControlChecks());
+    checks.push(...this.appsControlChecks(snapshot));
 
     const statistics: HardeningStatistics = {
       total: checks.length,

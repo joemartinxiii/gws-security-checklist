@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { getOAuth2Client, getTokensFromCode } from '../config/google.config';
+import { absoluteSessionMs, idleTimeoutMs } from '../utils/sessionCookie';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
@@ -8,8 +9,6 @@ if (!JWT_SECRET) {
 }
 // TypeScript now knows JWT_SECRET is defined
 const jwtSecret: string = JWT_SECRET;
-// Default 8h: privileged admin console; shorter TTL reduces stolen-session window.
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
 
 export interface AuthTokens {
   accessToken: string;
@@ -21,6 +20,11 @@ export interface UserInfo {
   email: string;
   name: string;
   picture?: string;
+}
+
+export interface SessionClaims extends UserInfo {
+  authTime: number;
+  lastActivity: number;
 }
 
 export class AuthService {
@@ -63,35 +67,94 @@ export class AuthService {
   }
 
   /**
-   * Create a JWT token for session management
+   * Create a JWT for a new sign-in. The token expires at the idle window.
+   * authTime is the original sign-in and does not move.
    */
   createSessionToken(userInfo: UserInfo): string {
-    return jwt.sign(
-      {
-        email: userInfo.email,
-        name: userInfo.name,
-        picture: userInfo.picture,
-      },
-      jwtSecret,
-      { expiresIn: JWT_EXPIRES_IN } as jwt.SignOptions
-    );
+    const now = nowSeconds();
+    return this.signSession({
+      email: userInfo.email,
+      name: userInfo.name,
+      picture: userInfo.picture,
+      authTime: now,
+      lastActivity: now,
+    });
   }
 
   /**
-   * Verify a JWT session token
+   * Verify a JWT. Rejects it after 15 minutes without a request, and 8 hours
+   * after the original sign-in. Tokens from before idle tracking use iat.
    */
-  verifySessionToken(token: string): { email: string; name: string; picture?: string } {
+  verifySessionToken(token: string): SessionClaims {
     try {
-      const decoded = jwt.verify(token, jwtSecret as string) as jwt.JwtPayload & { email: string; name: string; picture?: string };
-      if (!decoded.email || !decoded.name) {
+      const decoded = jwt.verify(token, jwtSecret) as jwt.JwtPayload & {
+        email?: string;
+        name?: string;
+        picture?: string;
+        authTime?: number;
+        lastActivity?: number;
+      };
+      if (!decoded.email || !decoded.name || !decoded.iat) {
         throw new Error('Invalid token payload');
       }
-      return { email: decoded.email, name: decoded.name, picture: decoded.picture };
+      const authTime = decoded.authTime ?? decoded.iat;
+      const lastActivity = decoded.lastActivity ?? decoded.iat;
+      const now = nowSeconds();
+      if (now - lastActivity > Math.floor(idleTimeoutMs() / 1000)) {
+        throw new Error('Session idle timeout');
+      }
+      if (now - authTime > Math.floor(absoluteSessionMs() / 1000)) {
+        throw new Error('Session ended');
+      }
+      return {
+        email: decoded.email,
+        name: decoded.name,
+        picture: decoded.picture,
+        authTime,
+        lastActivity,
+      };
     } catch (error) {
+      if (error instanceof Error && (error.message === 'Session idle timeout' || error.message === 'Session ended')) {
+        throw error;
+      }
       throw new Error('Invalid or expired token');
     }
   }
 
+  /**
+   * Replace the cookie after a real request. The new token expires 15 minutes
+   * from now, or sooner if the 8-hour sign-in limit is closer.
+   */
+  refreshSessionToken(session: SessionClaims): { token: string; maxAgeMs: number } {
+    const now = nowSeconds();
+    const claims: SessionClaims = { ...session, lastActivity: now };
+    const token = this.signSession(claims);
+    const absoluteLeftMs = (claims.authTime + Math.floor(absoluteSessionMs() / 1000) - now) * 1000;
+    return { token, maxAgeMs: Math.min(idleTimeoutMs(), Math.max(absoluteLeftMs, 1000)) };
+  }
+
+  private signSession(claims: SessionClaims): string {
+    const now = nowSeconds();
+    const absoluteEnd = claims.authTime + Math.floor(absoluteSessionMs() / 1000);
+    const idleEnd = now + Math.floor(idleTimeoutMs() / 1000);
+    const ttlSeconds = Math.max(Math.min(absoluteEnd, idleEnd) - now, 1);
+    return jwt.sign(
+      {
+        email: claims.email,
+        name: claims.name,
+        picture: claims.picture,
+        authTime: claims.authTime,
+        lastActivity: claims.lastActivity,
+      },
+      jwtSecret,
+      { expiresIn: ttlSeconds }
+    );
+  }
+
+}
+
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
 }
 
 export const authService = new AuthService();
