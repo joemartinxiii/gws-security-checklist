@@ -16,7 +16,7 @@ import {
   WaiversMap,
 } from '../services/securityAuditStore';
 import { driveExportService } from '../services/driveExport.service';
-import { convertToCSV } from '../utils/csv';
+import { convertToCSV, sendCSVResponse } from '../utils/csv';
 import { sendApiError } from '../utils/apiError';
 
 const router = Router();
@@ -237,12 +237,7 @@ router.get('/hardening/export', requireAnyAdmin, async (_req: AuthRequest, res: 
       });
     }
     const csv = convertToCSV(hardeningRowsForExport(report, waivers));
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="gws-hardening-${report.ranAt.split('T')[0]}.csv"`
-    );
-    res.send(csv);
+    sendCSVResponse(res, csv, `gws-hardening-${report.ranAt.split('T')[0]}.csv`);
   } catch (error: any) {
     sendApiError(res, error, 'Failed to export security audit', 'audit.hardening.export');
   }
@@ -266,8 +261,7 @@ router.post('/hardening/export/drive', requireSuperAdmin, async (req: AuthReques
       req.user!.email,
       fileName,
       csv,
-      'text/csv',
-      req.body?.folderId
+      'text/csv'
     );
     res.json({
       fileId: uploadResult.id,

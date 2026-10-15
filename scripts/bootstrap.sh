@@ -46,10 +46,7 @@ gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SA_EMAIL}" \
   --project="${PROJECT_ID}" \
   --quiet >/dev/null
 
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-  --member="serviceAccount:${RUNTIME_SA_EMAIL}" \
-  --role="roles/run.invoker" \
-  --quiet >/dev/null || true
+revoke_project_run_invoker "${PROJECT_ID}" "serviceAccount:${RUNTIME_SA_EMAIL}"
 
 if ! gcloud artifacts repositories describe "${ARTIFACT_REPO}" --location="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud artifacts repositories create "${ARTIFACT_REPO}" \
@@ -59,16 +56,7 @@ if ! gcloud artifacts repositories describe "${ARTIFACT_REPO}" --location="${REG
     --quiet
 fi
 
-if ! gcloud storage buckets describe "gs://${CHECKLIST_BUCKET}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-  gcloud storage buckets create "gs://${CHECKLIST_BUCKET}" \
-    --project="${PROJECT_ID}" \
-    --location="${REGION}" \
-    --uniform-bucket-level-access
-fi
-gcloud storage buckets add-iam-policy-binding "gs://${CHECKLIST_BUCKET}" \
-  --member="serviceAccount:${RUNTIME_SA_EMAIL}" \
-  --role="roles/storage.objectAdmin" \
-  --quiet >/dev/null
+ensure_checklist_bucket "${PROJECT_ID}" "${CHECKLIST_BUCKET}" "${REGION}" "serviceAccount:${RUNTIME_SA_EMAIL}"
 
 ensure_secret() {
   local name="$1"

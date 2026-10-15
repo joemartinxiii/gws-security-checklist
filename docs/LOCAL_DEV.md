@@ -12,10 +12,12 @@ Vite on http://localhost:3000. MSW signs you in as a mock super admin and mocks 
 ## Full stack
 
 ```bash
-# JWT_SECRET, GCP_PROJECT_ID, and WORKSPACE_DOMAIN must be in the process
-# environment before node starts (auth.service.ts reads JWT_SECRET at import).
-npx dotenv -e backend/.env -- npm run dev
+# backend/src/bootstrap-env.ts loads backend/.env before auth.service.ts
+# reads JWT_SECRET. From backend/, the same file is ./.env.
+npm run dev
 ```
+
+`npx dotenv -e backend/.env -- npm run dev` also works. Values already in the process environment win over the file.
 
 - Backend: http://localhost:5001
 - Frontend: http://localhost:3000 (proxies `/api` → :5001)

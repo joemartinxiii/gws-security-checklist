@@ -3,7 +3,7 @@
 # Keep SERVICE_ACCOUNT scopes in sync with backend/src/config/google.config.ts — run: npm run check:scopes
 
 # Domain-wide delegation (service account client_id in admin.google.com)
-DWD_SCOPES="https://www.googleapis.com/auth/admin.directory.user,https://www.googleapis.com/auth/chrome.management.policy,https://www.googleapis.com/auth/cloud-identity.policies.readonly,https://www.googleapis.com/auth/drive"
+DWD_SCOPES="https://www.googleapis.com/auth/admin.directory.user.readonly,https://www.googleapis.com/auth/chrome.management.policy.readonly,https://www.googleapis.com/auth/cloud-identity.policies.readonly,https://www.googleapis.com/auth/drive.file"
 
 # OAuth consent screen (browser sign-in — identity only; Workspace APIs use DWD)
 OAUTH_CONSENT_SCOPES="openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/userinfo.profile"

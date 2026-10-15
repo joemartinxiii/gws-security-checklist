@@ -46,25 +46,24 @@ export function convertToCSV(data: any[], options: CSVOptions = {}): string {
 
   for (const row of data) {
     const processedRow = transform ? transform(row) : row;
-    const values = headersToUse.map(header => {
-      let value = processedRow[header];
-      if (value === null || value === undefined) {
-        return '';
-      }
-      if (Array.isArray(value)) {
-        value = value.join('; ');
-      }
-      const stringValue = String(value)
-        .replace(/"/g, '""')  // Escape quotes
-        .replace(/\n/g, ' '); // Normalize newlines
-      return stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n') 
-        ? `"${stringValue}"` 
-        : stringValue;
-    });
+    const values = headersToUse.map(header => csvCell(processedRow[header]));
     csvRows.push(values.join(','));
   }
 
   return csvRows.join('\n');
+}
+
+/**
+ * Escape one CSV field. A leading =, +, -, @, tab, or CR is prefixed so
+ * spreadsheet apps treat waiver text and policy values as text.
+ */
+function csvCell(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  const raw = Array.isArray(value) ? value.join('; ') : String(value);
+  const flattened = raw.replace(/\r\n|\n|\r/g, ' ');
+  const neutralized = /^[=+\-@\t]/.test(flattened) ? `'${flattened}` : flattened;
+  const stringValue = neutralized.replace(/"/g, '""');
+  return /[",]/.test(stringValue) ? `"${stringValue}"` : stringValue;
 }
 
 /**

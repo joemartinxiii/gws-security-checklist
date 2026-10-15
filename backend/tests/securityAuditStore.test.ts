@@ -89,4 +89,13 @@ describe('securityAuditStore round-trip (local-disk fallback)', () => {
     expect(waivers['2fa-enforcement']).toBeUndefined();
     expect(waivers['gmail-auto-forwarding']).toBeDefined();
   });
+
+  test('concurrent waiver writes keep every check id', async () => {
+    await putWaivers({});
+    await Promise.all(
+      ['a', 'b', 'c', 'd'].map((id) => setWaiver(id, `reason ${id}`, 'admin@example.com'))
+    );
+    const waivers = await getWaivers();
+    expect(Object.keys(waivers).sort()).toEqual(['a', 'b', 'c', 'd']);
+  });
 });

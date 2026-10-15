@@ -8,17 +8,15 @@ export class DriveExportService extends WorkspaceService {
     userEmail: string,
     fileName: string,
     fileContent: string | Buffer,
-    mimeType: string = 'text/csv',
-    folderId?: string
+    mimeType: string = 'text/csv'
   ): Promise<{ id: string; webViewLink: string }> {
     const drive = await this.driveFor(userEmail);
 
-    const fileMetadata: { name: string; parents?: string[] } = {
+    // drive.file can create a file the app owns. It cannot place that file in
+    // an arbitrary existing folder, so callers do not pass a parent id.
+    const fileMetadata: { name: string } = {
       name: fileName,
     };
-    if (folderId) {
-      fileMetadata.parents = [folderId];
-    }
 
     const response = await this.withRetry(() =>
       drive.files.create({

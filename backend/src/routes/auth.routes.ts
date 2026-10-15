@@ -13,12 +13,12 @@ import {
   clearCookieOptions,
   oauthStateCookieOptions,
 } from '../utils/sessionCookie';
-import { getProtectedUserEmails } from '../utils/protectedUsers';
 
 const router = Router();
 
 function frontendBase(): string {
-  return process.env.CORS_ORIGIN?.split(',')[0].trim() || 'http://localhost:3000';
+  const raw = process.env.CORS_ORIGIN?.split(',')[0].trim() || 'http://localhost:3000';
+  return raw.replace(/\/+$/, '');
 }
 
 /**
@@ -91,7 +91,7 @@ router.get('/callback', async (req: Request, res: Response) => {
     res.cookie(SESSION_COOKIE_NAME, sessionToken, sessionCookieOptions());
 
     // Clean redirect — no tokens in query or fragment
-    res.redirect(`${base}/users`);
+    res.redirect(`${base}/`);
   } catch (error) {
     console.error('Error in OAuth callback:', error);
     res.redirect(`${base}/auth/error?error=callback_failed`);
@@ -104,20 +104,12 @@ router.get('/callback', async (req: Request, res: Response) => {
  */
 router.get('/me', authenticateSession, async (req: AuthRequest, res: Response) => {
   try {
-    // Authoritative internal-domain list (WORKSPACE_DOMAIN + GWS_ALLOWED_DOMAINS),
-    // unioned with the signed-in user's own domain as a safety net. The client
-    // uses this to classify Drive permissions as internal/external instead of a
-    // hardcoded default.
     const allowedDomains = getAllowedDomains();
-    const selfDomain = req.user?.email?.split('@')[1]?.toLowerCase();
-    if (selfDomain && !allowedDomains.includes(selfDomain)) allowedDomains.push(selfDomain);
     res.json({
       email: req.user?.email,
       name: req.user?.name,
       picture: req.user?.picture,
       allowedDomains,
-      /** Emails that cannot be permanently deleted (from GWS_PROTECTED_USERS). */
-      protectedUsers: getProtectedUserEmails(),
     });
   } catch (error) {
     console.error('Error getting user info:', error);

@@ -4,10 +4,8 @@ export interface User {
   email: string;
   name: string;
   picture?: string;
-  /** Internal domains (WORKSPACE_DOMAIN + GWS_ALLOWED_DOMAINS) for external-share classification. */
+  /** Domains permitted for this install (WORKSPACE_DOMAIN + GWS_ALLOWED_DOMAINS). */
   allowedDomains?: string[];
-  /** Emails that cannot be permanently deleted (from GWS_PROTECTED_USERS). */
-  protectedUsers?: string[];
 }
 
 /**

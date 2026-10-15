@@ -1,17 +1,16 @@
 import { google } from 'googleapis';
 import { GoogleAuth, OAuth2Client } from 'google-auth-library';
 
-let oauth2Client: OAuth2Client | null = null;
 let baseAuth: GoogleAuth | null = null;
 let cachedSaEmail: string | null = null;
 
 // Scopes the service account is authorized for via domain-wide delegation.
 // Keep in sync with scripts/lib/scopes.sh (DWD_SCOPES) — run: npm run check:scopes
 const SERVICE_ACCOUNT_SCOPES = [
-  'https://www.googleapis.com/auth/admin.directory.user',
-  'https://www.googleapis.com/auth/chrome.management.policy',
+  'https://www.googleapis.com/auth/admin.directory.user.readonly',
+  'https://www.googleapis.com/auth/chrome.management.policy.readonly',
   'https://www.googleapis.com/auth/cloud-identity.policies.readonly',
-  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/drive.file',
 ];
 
 export interface GoogleConfig {
@@ -142,19 +141,14 @@ export async function getDelegatedAuthClient(subject: string): Promise<OAuth2Cli
   return client;
 }
 
+/**
+ * A new client every call. Login must not share one OAuth2Client: token
+ * exchange and userinfo both call setCredentials, and Cloud Run handles
+ * concurrent callbacks on the same process.
+ */
 export function getOAuth2Client(): OAuth2Client {
-  if (oauth2Client) {
-    return oauth2Client;
-  }
-
   const config = getGoogleConfig();
-  oauth2Client = new google.auth.OAuth2(
-    config.clientId,
-    config.clientSecret,
-    config.redirectUri
-  );
-
-  return oauth2Client;
+  return new google.auth.OAuth2(config.clientId, config.clientSecret, config.redirectUri);
 }
 
 /**
