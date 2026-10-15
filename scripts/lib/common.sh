@@ -132,6 +132,15 @@ ensure_iap_service_agent() {
       --quiet >/dev/null
 }
 
+# Succeeds when the service reads GOOGLE_REDIRECT_URI from a secret (services deployed by 1.0.0).
+redirect_uri_is_secret() {
+  local service="$1"
+  local region="$2"
+  local project="$3"
+  gcloud run services describe "${service}" --region "${region}" --project="${project}" --format=yaml 2>/dev/null \
+    | awk '/^[[:space:]]*- name: GOOGLE_REDIRECT_URI[[:space:]]*$/ { getline; if ($0 ~ /^[[:space:]]*valueFrom:/) found = 1 } END { exit found ? 0 : 1 }'
+}
+
 # Prints the number of the newest enabled version of a secret.
 # Cloud Run takes only a version number or "latest", so strip the resource path.
 latest_secret_version() {
@@ -176,7 +185,7 @@ ensure_checklist_bucket() {
   local lifecycle
   lifecycle="$(mktemp)"
   cat >"${lifecycle}" <<'JSON'
-{"rule":[{"action":{"type":"Delete"},"condition":{"daysSinceNoncurrentTime":30,"isLive":false}}]}
+{"lifecycle":{"rule":[{"action":{"type":"Delete"},"condition":{"daysSinceNoncurrentTime":30,"isLive":false}}]}}
 JSON
   gcloud storage buckets update "gs://${bucket}" \
     --lifecycle-file="${lifecycle}" \
@@ -206,6 +215,7 @@ JSON
     --location="${region}" \
     --project="${project}" \
     --policy="${policy}" \
+    --no-dry-run \
     --quiet >/dev/null
   rm -f "${policy}"
 }

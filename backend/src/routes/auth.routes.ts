@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
-import { createPkcePair, getAuthUrl } from '../config/google.config';
+import { createPkcePair, getAuthUrl, getGoogleConfig } from '../config/google.config';
 import { authService } from '../services/auth.service';
 import { authenticateSession, AuthRequest } from '../middleware/auth.middleware';
 import { permissionsService } from '../services/permissions.service';
@@ -29,6 +29,10 @@ function frontendBase(): string {
  * PKCE verifier binds the code exchange to this browser.
  */
 router.get('/login', async (_req: Request, res: Response) => {
+  if (!getGoogleConfig().redirectUri) {
+    console.error('Sign-in refused: GOOGLE_REDIRECT_URI is not set.');
+    return res.status(503).json({ error: 'Sign-in is not set up yet. Try again in a minute.' });
+  }
   try {
     const state = crypto.randomBytes(24).toString('hex');
     const { codeVerifier, codeChallenge } = await createPkcePair();

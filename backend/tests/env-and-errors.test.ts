@@ -74,6 +74,18 @@ describe('production environment validation', () => {
     }
   );
 
+  test('starts without GOOGLE_REDIRECT_URI, which deploy.sh sets once the service URL is known', () => {
+    setEnv({ ...productionEnv, GOOGLE_REDIRECT_URI: undefined });
+    expect(findEnvironmentProblems()).toEqual({ missing: [], invalid: [] });
+    expect(run()).toBeUndefined();
+  });
+
+  test('fails startup when GOOGLE_REDIRECT_URI contains PLACEHOLDER', () => {
+    setEnv({ ...productionEnv, GOOGLE_REDIRECT_URI: 'https://placeholder.invalid/api/auth/callback' });
+    expect(findEnvironmentProblems().invalid.join(' ')).toContain('GOOGLE_REDIRECT_URI');
+    expect(run()).toBe(1);
+  });
+
   test('does not apply the production rules outside production', () => {
     setEnv({
       NODE_ENV: 'development',

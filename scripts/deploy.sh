@@ -128,9 +128,20 @@ SECRETS_ARG="$(IFS=','; printf '%s' "${SECRET_REFS[*]}")"
 
 # The redirect URI is the service URL plus /api/auth/callback. It is not a
 # secret, so it is a plain env var. A service that already exists has a URL we
-# can read now. On a first deploy, the app needs a value to start, so it gets a
-# placeholder and the follow-up update below sets the real one.
+# can read now. A first deploy has no URL yet, so the follow-up update below
+# sets GOOGLE_REDIRECT_URI and CORS_ORIGIN. The app starts without them, and
+# sign-in answers 503 until the update lands.
+#
+# Services deployed by 1.0.0 have GOOGLE_REDIRECT_URI as a secret reference.
+# gcloud applies env var changes before secret changes, so one command cannot
+# turn that secret into a plain value. The deploy drops the secret, and the
+# follow-up update adds the plain value.
 EXISTING_URL="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" --region "${REGION}" --project="${PROJECT_ID}" --format='value(status.url)' 2>/dev/null || true)"
+REDIRECT_IS_SECRET=0
+if [[ -n "${EXISTING_URL}" ]] && redirect_uri_is_secret "${CLOUD_RUN_SERVICE}" "${REGION}" "${PROJECT_ID}"; then
+  REDIRECT_IS_SECRET=1
+  log "GOOGLE_REDIRECT_URI is still a secret reference. This deploy moves it to a plain env var."
+fi
 ENV_VARS=(
   "NODE_ENV=production"
   "GCP_PROJECT_ID=${PROJECT_ID}"
@@ -138,9 +149,8 @@ ENV_VARS=(
   "CHECKLIST_BUCKET=${CHECKLIST_BUCKET}"
 )
 if [[ -n "${EXISTING_URL}" ]]; then
-  ENV_VARS+=("GOOGLE_REDIRECT_URI=${EXISTING_URL}/api/auth/callback" "CORS_ORIGIN=${EXISTING_URL}")
-else
-  ENV_VARS+=("GOOGLE_REDIRECT_URI=https://placeholder.invalid/api/auth/callback")
+  ENV_VARS+=("CORS_ORIGIN=${EXISTING_URL}")
+  [[ "${REDIRECT_IS_SECRET}" == "1" ]] || ENV_VARS+=("GOOGLE_REDIRECT_URI=${EXISTING_URL}/api/auth/callback")
 fi
 [[ -z "${GWS_AUDIT_READERS:-}" ]] || ENV_VARS+=("GWS_AUDIT_READERS=${GWS_AUDIT_READERS}")
 [[ -z "${DKIM_SELECTORS:-}" ]] || ENV_VARS+=("DKIM_SELECTORS=${DKIM_SELECTORS}")
@@ -190,7 +200,7 @@ SERVICE_URL="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" --region "${R
 [[ -n "${SERVICE_URL}" ]] || die "Could not read the service URL."
 REDIRECT_URI="${SERVICE_URL}/api/auth/callback"
 
-if [[ "${SERVICE_URL}" != "${EXISTING_URL}" ]]; then
+if [[ "${SERVICE_URL}" != "${EXISTING_URL}" || "${REDIRECT_IS_SECRET}" == "1" ]]; then
   log "Setting GOOGLE_REDIRECT_URI and CORS_ORIGIN for ${SERVICE_URL}..."
   if ! gcloud run services update "${CLOUD_RUN_SERVICE}" \
     --region "${REGION}" --project="${PROJECT_ID}" \

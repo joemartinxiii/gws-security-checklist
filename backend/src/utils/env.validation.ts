@@ -14,15 +14,17 @@ export function findEnvironmentProblems(): { missing: string[]; invalid: string[
   // Local/dev may still start without them for non-login work, but login will fail.
   // Production also needs the bucket: without it results and sessions land on the
   // container's local disk and vanish between instances.
+  // GOOGLE_REDIRECT_URI is not required to start: deploy.sh sets it once the
+  // service URL is known, and sign-in refuses to start until then.
   if (isProduction) {
-    required.push('GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI', 'CHECKLIST_BUCKET');
+    required.push('GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'CHECKLIST_BUCKET');
   }
 
   const missing = required.filter((key) => !envPresent(key));
   const invalid: string[] = [];
 
   if (isProduction) {
-    for (const key of required) {
+    for (const key of [...required, 'GOOGLE_REDIRECT_URI']) {
       if (envPresent(key) && /placeholder/i.test(process.env[key] as string)) {
         invalid.push(`${key} still contains a PLACEHOLDER value`);
       }
@@ -50,9 +52,9 @@ export function validateEnvironment(): void {
   }
 
   // Optional but recommended
-  const recommended = ['CORS_ORIGIN', 'GWS_ALLOWED_DOMAINS', 'SERVICE_ACCOUNT_EMAIL'];
+  const recommended = ['CORS_ORIGIN', 'GWS_ALLOWED_DOMAINS', 'SERVICE_ACCOUNT_EMAIL', 'GOOGLE_REDIRECT_URI'];
   if (!isProduction) {
-    recommended.push('GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI');
+    recommended.push('GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET');
   }
   const missingRecommended = recommended.filter((key) => !envPresent(key));
 

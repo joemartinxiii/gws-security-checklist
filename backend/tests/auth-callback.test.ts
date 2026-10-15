@@ -57,6 +57,19 @@ describe('OAuth callback', () => {
     return { login, state, verifier, authUrl: new URL(login.body.authUrl) };
   }
 
+  test('login refuses to start until GOOGLE_REDIRECT_URI is set', async () => {
+    const saved = process.env.GOOGLE_REDIRECT_URI;
+    delete process.env.GOOGLE_REDIRECT_URI;
+    try {
+      const res = await request(app).get('/api/auth/login');
+      expect(res.status).toBe(503);
+      expect(res.body.authUrl).toBeUndefined();
+      expect(res.headers['set-cookie']).toBeUndefined();
+    } finally {
+      process.env.GOOGLE_REDIRECT_URI = saved;
+    }
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     // Stands in for Google: the exchange succeeds only for the verifier that matches the challenge.
