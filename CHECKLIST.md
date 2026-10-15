@@ -2,7 +2,7 @@
 
 What this app checks, how it stores results, and how to run it.
 
-Deploy and scopes: [docs/DEPLOY.md](docs/DEPLOY.md), [SECURITY.md](SECURITY.md).
+Deploy and scopes: [docs/DEPLOY.md](docs/DEPLOY.md), [docs/DEPLOY_LOCAL.md](docs/DEPLOY_LOCAL.md), [docs/DEPLOY_CLOUD_SHELL.md](docs/DEPLOY_CLOUD_SHELL.md), [SECURITY.md](SECURITY.md).
 
 The catalog mirrors Google’s published [Security checklists](https://knowledge.workspace.google.com/admin/security/security-checklists). Most non-DNS settings are read from the **Cloud Identity Policy API**. When Google returns no saved policy, the check scores the published default and labels the current value “Google default.” Settings Google does not publish stay **manual**.
 

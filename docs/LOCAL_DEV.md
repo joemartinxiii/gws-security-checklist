@@ -13,7 +13,7 @@ Vite serves http://localhost:3000. The mock signs you in as a super admin and an
 
 ## Full stack
 
-Use this when you want the local API to call a real Workspace tenant. Finish [DEPLOY.md](./DEPLOY.md) first, or create the same OAuth client and domain-wide delegation for a local redirect URI of `http://localhost:5001/api/auth/callback`.
+Use this when you want the local API to call a real Workspace tenant. Finish [DEPLOY_LOCAL.md](./DEPLOY_LOCAL.md) or [DEPLOY_CLOUD_SHELL.md](./DEPLOY_CLOUD_SHELL.md) first, or create the same OAuth client and domain-wide delegation for a local redirect URI of `http://localhost:5001/api/auth/callback`.
 
 `backend/src/bootstrap-env.ts` loads `backend/.env` before the server reads `JWT_SECRET`. Put secrets in `backend/.env`. That file is gitignored. Do not commit it.
 

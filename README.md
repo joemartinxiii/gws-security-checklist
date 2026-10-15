@@ -25,7 +25,12 @@ Sign-in uses a Google OAuth Web client for identity only (email and profile). Wo
 | Cloud Storage | `latest.json` and `waivers.json` |
 | Secret Manager | OAuth client, session secret, allowed domain |
 
-Setup for your own Workspace is in [docs/DEPLOY.md](docs/DEPLOY.md).
+Setup for your own Workspace:
+
+- [On your Mac or Windows PC](docs/DEPLOY_LOCAL.md)
+- [In Google Cloud Shell](docs/DEPLOY_CLOUD_SHELL.md)
+
+Both guides deploy the same Cloud Run service. [docs/DEPLOY.md](docs/DEPLOY.md) is the short map, including the one command that updates an install that is already running.
 
 ## Try the UI without a tenant
 
@@ -38,7 +43,9 @@ Opens http://localhost:3000 as a mock super admin with sample checks and sample 
 
 ## Docs
 
-- [docs/DEPLOY.md](docs/DEPLOY.md) — connect a GCP project and a Workspace tenant
+- [docs/DEPLOY_LOCAL.md](docs/DEPLOY_LOCAL.md) — install on a Mac or Windows PC
+- [docs/DEPLOY_CLOUD_SHELL.md](docs/DEPLOY_CLOUD_SHELL.md) — install in Google Cloud Shell
+- [docs/DEPLOY.md](docs/DEPLOY.md) — which guide to use, and how to update
 - [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md) — local UI and full stack
 - [SECURITY.md](SECURITY.md) — who can sign in, scopes, storage
 - [CHECKLIST.md](CHECKLIST.md) — check catalog and API
