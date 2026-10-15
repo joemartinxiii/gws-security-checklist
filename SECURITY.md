@@ -18,6 +18,8 @@ A delegated admin needs the **Users read** privilege to sign in. Anyone else see
 
 Sign-in uses PKCE. The callback verifies the ID token's `hd` (hosted domain) and `email_verified` claims before it looks up the admin.
 
+Until `GOOGLE_REDIRECT_URI` is set, sign-in answers 503 ("Sign-in is not set up yet"). The service still starts. `deploy.sh` sets the variable after the service URL is known.
+
 The service logs the email of each denied sign-in to Cloud Logging. Treat those logs as containing personal data, and set a retention period that fits your policy.
 
 ## Who can do what
@@ -29,7 +31,7 @@ The service logs the email of each denied sign-in to Cloud Logging. Treat those 
 | Download the checklist PDF | Anyone who can view the last run (built in the browser from the loaded run) |
 | Open the 2FA report and download its CSV | Any admin |
 | Run the checklist | Super admin |
-| Waive or restore a check | Super admin |
+| Waive or restore a check | Super admin. A waiver needs a reason (1000 characters max). |
 | Save a CSV to that admin’s Drive | Super admin |
 
 `GWS_AUDIT_READERS` is a comma-separated list of emails. Set it in your shell when you run `deploy.sh`. Those readers must still be Workspace admins who can sign in.
@@ -82,7 +84,7 @@ CSV downloads prefix a cell that starts with `=`, `+`, `-`, `@`, or a tab, so a 
 
 The OAuth client id and secret, the session secret, and the domain lists are in Secret Manager. `deploy.sh` pins each one to a version number, so a change takes effect on the next deploy. See [Change a secret](docs/DEPLOY.md#change-a-secret). Rotating `checklist-jwt-secret` signs everyone out.
 
-The OAuth redirect URI is the service URL plus `/api/auth/callback`. It is not a secret and is a plain env var.
+The OAuth redirect URI is the service URL plus `/api/auth/callback`. It is a plain env var, `GOOGLE_REDIRECT_URI`, not a secret. Production startup does not require it. On a first deploy, and when upgrading a 1.0.0 service that still reads it from `checklist-oauth-redirect-uri`, `deploy.sh` sets the plain value in a follow-up update. Sign-in returns 503 until that update lands. Keep the old secret until you will not roll back to 1.0.0. That revision still reads it.
 
 ## What is stored
 

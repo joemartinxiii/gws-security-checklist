@@ -159,9 +159,9 @@ Version 1.0.0 had no IAP, built as the default compute account, and kept the red
    ```bash
    PROJECT_ID=YOUR_PROJECT_ID WORKSPACE_DOMAIN=yourcompany.com ALLOWED_DOMAINS=yourcompany.com bash scripts/bootstrap.sh
    ```
-3. Deploy with `IAP_ACCESS_GROUP` set. The deploy moves the redirect URI from the secret to a plain env var, and it pins the other secrets to version numbers.
+3. Deploy with `IAP_ACCESS_GROUP` set. The deploy pins secrets to version numbers. It also moves `GOOGLE_REDIRECT_URI` off the old secret. gcloud cannot turn a secret env var into a plain value in one command, so the script drops the secret on the main deploy and sets the plain value in a follow-up update. That is two revisions. Sign-in returns 503 for about a minute between them. A first deploy does the same, because there is no service URL until the first revision exists.
 4. Check that sign-in works through IAP.
-5. Delete the unused secret:
+5. After sign-in works, and after you are sure you will not roll traffic back to the 1.0.0 revision, delete the unused secret:
 
    ```bash
    gcloud secrets delete checklist-oauth-redirect-uri --project=YOUR_PROJECT_ID
@@ -246,4 +246,4 @@ Reduce that exposure:
 | `checklist-workspace-domain` | Primary Workspace domain |
 | `checklist-allowed-domains` | Domains allowed to sign in |
 
-The OAuth redirect URI (`https://<service>/api/auth/callback`) is a plain env var, `GOOGLE_REDIRECT_URI`. It is not a secret.
+The OAuth redirect URI (`https://<service>/api/auth/callback`) is a plain env var, `GOOGLE_REDIRECT_URI`. It is not a secret. The service starts without it. Sign-in answers 503 until `deploy.sh` sets it.

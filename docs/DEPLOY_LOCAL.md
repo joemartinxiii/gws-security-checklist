@@ -173,7 +173,7 @@ Cloud Build and Cloud Run usually take several minutes. The script turns on IAP,
 
 Copy that callback URL exactly.
 
-If the script exits with an error after the first revision is created, run the same deploy command again. Sign-in stays broken until the redirect URI is set on the service.
+The app starts before `GOOGLE_REDIRECT_URI` exists. Sign-in returns 503 until the script's follow-up update sets it. If the script exits after the first revision, run the same deploy command again.
 
 ## 11. Finish sign-in
 
@@ -182,7 +182,7 @@ If the script exits with an error after the first revision is created, run the s
 3. Sign in to the app with a super admin in the allowed domain.
 4. On the Security Checklist page, choose **Run checklist**.
 
-A super admin can run the checklist, waive a check, and save a CSV to Drive. Another Workspace admin in an allowed domain can view the last run and download CSV or PDF.
+A super admin can run the checklist, waive a check (a reason is required), and save a CSV to Drive. Stored results are for super admins. To let another admin view the last run and download CSV or PDF, add that address to `GWS_AUDIT_READERS` and deploy again.
 
 If Google says the redirect URI does not match, the URI on the OAuth client is different from the one `deploy.sh` printed. Add the printed one and try again.
 

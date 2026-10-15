@@ -10,6 +10,10 @@
 - Production refuses bearer tokens. A request that changes data must come from the app's own origin.
 - Sessions rotate every 5 minutes, not on every request.
 - The service logs the email of each denied sign-in. SECURITY.md says so.
+- A waiver needs a reason, up to 1000 characters. An empty reason is rejected. Importing old browser waivers uses "Imported from browser (no reason given)" when the saved reason was blank.
+- A delegated admin who cannot read stored results sees an explanation. The page no longer looks like the checklist has never been run.
+- Checklist rows open from the keyboard with Enter or Space.
+- Sign-in returns 503 until `GOOGLE_REDIRECT_URI` is set. The service starts without it. On a first deploy, and when a 1.0.0 service still reads the redirect URI from a secret, `deploy.sh` sets the plain value in a follow-up update.
 
 ### Checks and score
 - New checks. Administrator Accounts: `super-admin-count`, `admin-2sv`, `super-admin-recovery`. Authentication: `security-keys`. Email: `gmail-pop-imap`, `gmail-comprehensive-storage`, `gmail-ip-allowlist`, `dns-mx`. Apps Control: `third-party-apps`. Google Drive: `drive-external-warning`, `drive-publishing`, `drive-non-google-invites`, `drive-receive-external`, `drive-shared-drive-move`. Groups: `groups-creation`, `groups-external-access`. Chat: `chat-external`.
@@ -26,7 +30,8 @@
 - `GOOGLE_REDIRECT_URI` is a plain env var. The `checklist-oauth-redirect-uri` secret is no longer used. Delete it after the first deploy with this version. The deploy no longer adds a secret version on every run.
 - `deploy.sh` pins each secret to its newest enabled version number. A secret change reaches the service on the next deploy. DEPLOY.md documents how to change allowed domains and rotate `JWT_SECRET`.
 - `deploy.sh` passes `GWS_AUDIT_READERS` and `DKIM_SELECTORS` to the service when you set them.
-- Bootstrap sets an Artifact Registry cleanup policy (keep the 3 newest images) and a bucket lifecycle rule (delete noncurrent versions after 30 days).
+- Bootstrap sets an Artifact Registry cleanup policy (keep the 3 newest images) and a bucket lifecycle rule (delete noncurrent versions after 30 days). The cleanup policy is applied with `--no-dry-run`, so it deletes images. The lifecycle file uses the documented `{"lifecycle": ...}` shape.
+- The mock UI includes a row for every check the engine emits, except the error placeholders.
 - Bootstrap enables `iap.googleapis.com` and creates the IAP service agent.
 - DEPLOY.md, DEPLOY_LOCAL.md, and DEPLOY_CLOUD_SHELL.md describe IAP, the upgrade from 1.0.0, and the risk of domain-wide delegation. They correct the old claim that the service account works only while it acts as the signed-in admin. SECURITY.md adds hardening guidance: a dedicated project, few project principals, the `iam.disableServiceAccountKeyCreation` org policy, and an alert on `SignJwt` calls.
 

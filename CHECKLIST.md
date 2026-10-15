@@ -17,13 +17,13 @@ When the Policy API is unavailable (API off, missing DWD scope, or caller not su
 ## Check catalog
 
 ### Administrator Accounts
-- **Auto** `super-admin-count`: number of super admin accounts
-- **Auto** `admin-2sv`: 2-Step Verification for admin accounts
-- **Auto** `super-admin-recovery`: recovery options on super admin accounts
+- **Auto** `super-admin-count`: number of active super admin accounts
+- **Auto** `admin-2sv`: 2-Step Verification enrollment for super admins and delegated admins
+- **Auto** `super-admin-recovery`: whether super admins can recover their own accounts
 
 ### Authentication
 - **Auto**: 2-Step Verification (Directory enrollment, paged). It reads the organization’s enforcement policy and excludes suspended users. The 2FA Report lists name, email, enrolled, and enforced.
-- **Auto** `security-keys`: security key requirement
+- **Auto** `security-keys`: whether any org unit or group is limited to security keys or passkeys
 - **Auto**: Strong password policy (`security.password`). It requires 12 or more characters.
 - **Auto**: Advanced Protection Program
 
@@ -46,7 +46,7 @@ When the Policy API is unavailable (API off, missing DWD scope, or caller not su
 - **Auto** `drive-publishing`: publishing files to the web
 - **Auto** `drive-non-google-invites`: sharing invitations to people without a Google account
 - **Auto** `drive-receive-external`: receiving files from outside the organization
-- **Auto** `drive-shared-drive-move`: moving items out of shared drives
+- **Auto** `drive-shared-drive-move`: who can move shared-drive files into another organization
 - **Manual**: Offline access (Google does not publish this setting)
 
 ### Groups
@@ -61,7 +61,7 @@ These checks use the Chrome Policy API. A Workspace with no managed browsers sho
 - **Auto** `chrome-relaunch-notification`: relaunch notification for updates
 - **Auto** `chrome-safe-browsing`: Safe Browsing protection level
 - **Auto** `chrome-safe-browsing-bypass`: users bypassing Safe Browsing warnings
-- **Auto** `chrome-password-manager`: built-in password manager
+- **Auto** `chrome-password-manager`: Chrome password manager. Allowed is a pass. Blocked is a fail.
 - **Auto** `chrome-download-restrictions`: download restrictions
 - **Auto** `chrome-site-isolation`: site isolation
 - **Auto** `chrome-allowed-domains`: allowed sign-in domains
@@ -76,7 +76,7 @@ These checks use the Chrome Policy API. A Workspace with no managed browsers sho
 ### Apps Control
 - **Manual**: Context-Aware Access (Enterprise)
 - **Auto**: Core apps and additional apps, from saved `service_status` policies. No saved policy means Google defaults apply. It does not invent a service as on.
-- **Auto** `third-party-apps`: third-party app access
+- **Auto** `third-party-apps`: access for third-party apps the organization has not configured
 
 ### Severity
 
@@ -96,12 +96,12 @@ Less secure apps is **low**. Automatic forwarding is **medium** and **info** whe
 ## How to use (UI)
 
 1. Open **Security Checklist** (`/`).
-2. Page loads the **last saved org snapshot** (does not auto-run).
+2. Page loads the **last saved org snapshot** (does not auto-run). A delegated admin who is not listed in `GWS_AUDIT_READERS` sees an explanation instead of the snapshot.
 3. **Run checklist** (super admin) re-evaluates checks and writes `security-checklist/latest.json`.
 4. Segments: **Overview**, **Passing**, **Failing**, **Waived**. The **Failing** tab lists failed and warning checks, and it also lists manual checks (they need review). It is sorted by severity, then by fail, warning, and manual. Waived checks move to **Waived**.
 5. Each check has severity, rationale, and recommendation.
-6. **Waive** (super admin) stores an optional reason in `security-checklist/waivers.json` (survives re-runs).
-7. **Export** CSV, PDF, or Drive uses the loaded last run and waivers. It does not call the Policy API again.
+6. **Waive** (super admin) requires a reason, up to 1000 characters, stored in `security-checklist/waivers.json` (survives re-runs).
+7. **Export** CSV and PDF are built in the browser from the loaded run. **Export to Drive** is super admin only. None of these call the Policy API again.
 8. On **2-Step Verification**, **2FA Report** lists each user’s name, email, enrollment, and enforcement. Export that page to CSV or Drive.
 
 ---
@@ -127,7 +127,7 @@ Stored results, waivers, and the CSV export are for super admins and for emails 
 |--------|------|-----|----------|
 | GET | `/api/audit/hardening` or `/latest` | Super admin or audit reader | Cached last run + waivers |
 | POST | `/api/audit/hardening/run` | Super admin | Evaluate + persist |
-| PUT/DELETE | `/api/audit/hardening/waivers/:checkId` | Super admin | Set / clear waiver |
+| PUT/DELETE | `/api/audit/hardening/waivers/:checkId` | Super admin | Set or clear a waiver. A reason is required (1000 characters max). |
 | POST | `/api/audit/hardening/waivers/import` | Super admin | Merge browser-local waivers once |
 | GET | `/api/audit/hardening/export` | Super admin or audit reader | CSV from cache |
 | POST | `/api/audit/hardening/export/drive` | Super admin | Drive upload from cache |
