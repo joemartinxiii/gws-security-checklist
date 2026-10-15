@@ -1,45 +1,52 @@
 # Security
 
-Security Checklist is a single Cloud Run service. Browser OAuth is **identity only**. All Workspace API calls use **keyless domain-wide delegation** (the runtime service account signs its own JWT via the IAM Credentials API). There is no service-account key file.
+GWS Security is one Cloud Run service. The browser OAuth client identifies the person. Every Workspace API call uses domain-wide delegation. The runtime service account has no key file. Cloud Run asks the IAM Credentials API to sign the delegation token, and that token acts as the admin who signed in.
+
+Create the OAuth client and the domain-wide delegation client ID for this app. Do not point them at another product.
 
 ## Who can sign in
 
-- The user must be a Google Workspace **admin** (super or delegated) in an allowed domain (`WORKSPACE_DOMAIN` ∪ `GWS_ALLOWED_DOMAINS`).
-- Domain checks fail closed when no domains are configured (`isEmailInAllowedDomain`).
+The account must be a Google Workspace admin (super admin or delegated admin) in an allowed domain. Allowed domains are `WORKSPACE_DOMAIN` plus `GWS_ALLOWED_DOMAINS`. If no domain is configured, sign-in fails closed.
 
 ## Who can do what
 
-| Action | Gate |
-|--------|------|
-| View last run + waivers | Any Workspace admin |
-| CSV export (cached) | Any admin |
-| Run checklist | Super admin |
-| Set / remove waiver | Super admin |
-| Export to Drive | Super admin |
+| Action | Who |
+|--------|-----|
+| View the last checklist run and waivers | Any Workspace admin |
+| Download the checklist CSV or PDF | Any admin (built in the browser from the loaded run) |
+| Open the 2FA report and download its CSV | Any admin |
+| Run the checklist | Super admin |
+| Waive or restore a check | Super admin |
+| Save a CSV to that admin’s Drive | Super admin |
 
-Enforced server-side by `requireAnyAdmin` / `requireSuperAdmin`. Hiding a button in the UI is not a security control.
+The API enforces this with `requireAnyAdmin` and `requireSuperAdmin`. Hiding a button is not the control.
 
-## DWD scopes
+## Scopes
 
-Keep these in sync in `scripts/lib/scopes.sh` and `backend/src/config/google.config.ts`. Run `npm run check:scopes`.
+Domain-wide delegation scopes live in `scripts/lib/scopes.sh` and `backend/src/config/google.config.ts`. `npm run check:scopes` checks that they match.
 
+- `https://www.googleapis.com/auth/admin.directory.user.readonly`
 - `https://www.googleapis.com/auth/cloud-identity.policies.readonly`
 - `https://www.googleapis.com/auth/chrome.management.policy.readonly`
-- `https://www.googleapis.com/auth/admin.directory.user.readonly`
-- `https://www.googleapis.com/auth/drive.file` (create the checklist CSV only)
+- `https://www.googleapis.com/auth/drive.file`
 
-Browser OAuth: `openid`, `userinfo.email`, `userinfo.profile`.
+`drive.file` can create the export file. It does not grant access to the rest of Drive.
 
-## Tokens and transport
+The browser consent screen is `openid`, `userinfo.email`, and `userinfo.profile`.
 
-- Session is an HttpOnly cookie. OAuth callback returns no tokens in the query string.
-- CORS is locked to `CORS_ORIGIN` in production.
-- `/health` returns only `{ status, timestamp }`.
+## Session and errors
 
-## Persistence
+The session is an HttpOnly cookie. The OAuth callback does not put tokens in the query string. In production, CORS allows only `CORS_ORIGIN`.
 
-Last-run and waivers live in `CHECKLIST_BUCKET` (`gs://<project>-security-checklist/security-checklist/`). Do not commit `.env*` files, keys, or real tenant identifiers.
+`/health` returns `{ status, timestamp }`.
 
-## Sibling product
+CSV downloads prefix a cell that starts with `=`, `+`, `-`, `@`, or a tab, so a spreadsheet treats a display name as text.
 
-This app was copied from GWS Admin Assist and then diverged. Do not reuse Admin Assist OAuth clients or DWD client IDs. Use a dedicated SA (`security-checklist-sa`) and the trimmed scope list above.
+## What is stored
+
+The last successful run and the waivers are JSON objects in `CHECKLIST_BUCKET`:
+
+`gs://<project>-security-checklist/security-checklist/latest.json`
+`gs://<project>-security-checklist/security-checklist/waivers.json`
+
+The bucket is created with uniform access, public access prevention, and object versioning. Do not commit `.env` files, keys, or real tenant names.

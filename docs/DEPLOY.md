@@ -1,18 +1,24 @@
-# Deploy to Cloud Run
+# Set up GWS Security on your Workspace
 
-Security Checklist runs as **one Cloud Run service** (API + built React app). It can live in the **same GCP project** as GWS Admin Assist. Use a **new** OAuth client, a **new** DWD service account, and a **new** GCS bucket.
+GWS Security runs as one Cloud Run service: the API and the built React app. You need a Google Cloud project with billing, and a Google Workspace tenant where you are a super admin.
 
-Local development: [LOCAL_DEV.md](./LOCAL_DEV.md). Security model: [SECURITY.md](../SECURITY.md).
+The app creates its own service account, OAuth client secrets, and storage bucket. Use those only for this app.
 
-## Prerequisites
+Local development without a tenant: [LOCAL_DEV.md](./LOCAL_DEV.md). Who can sign in and which scopes are used: [SECURITY.md](../SECURITY.md).
+
+## What you need
 
 | You need | Why |
 |----------|-----|
-| Workspace **Super Admin** | Domain-wide delegation in admin.google.com |
-| GCP **Project Owner** (or equivalent) | Cloud Run, secrets, IAM |
-| Billing on the GCP project | Cloud Run + Artifact Registry |
+| Workspace **super admin** | Turn on domain-wide delegation in the Admin console |
+| GCP project **Owner** (or the same rights) | Cloud Run, Secret Manager, IAM, the bucket |
+| Billing on that GCP project | Cloud Run, Cloud Build, and Artifact Registry |
 
-## First deploy
+The Cloud Run service uses `--min-instances 0`. It does not keep an instance running when nobody is calling it.
+
+## 1. Bootstrap the GCP project
+
+From a machine where `gcloud` is logged in to the project:
 
 ```bash
 PROJECT_ID=your-gcp-project-id \
@@ -21,48 +27,85 @@ ALLOWED_DOMAINS=yourcompany.com \
 bash scripts/bootstrap.sh
 ```
 
-Then complete the console steps the script prints:
+`WORKSPACE_DOMAIN` is the Workspace primary domain. `ALLOWED_DOMAINS` is the comma-separated list of domains whose admins may sign in. For one domain, set both to that domain.
 
-1. **OAuth consent + Web client** — identity scopes only. Do not reuse the Admin Assist client.
-2. Store the client id/secret in Secret Manager (`checklist-oauth-client-id`, `checklist-oauth-client-secret`).
-3. **Domain-wide delegation** — authorize the printed SA numeric client ID with the scopes in `scripts/lib/scopes.sh`.
+The script enables the APIs, creates the runtime service account `security-checklist-sa`, an Artifact Registry repo, the bucket `<project>-security-checklist`, and Secret Manager entries. It prints the service account’s numeric client ID and the exact scope list. Keep that output.
+
+## 2. Create the OAuth Web client
+
+In Google Cloud Console, for the same project:
+
+1. Configure the OAuth consent screen as **Internal**.
+2. Create an **OAuth client ID** of type **Web application** for this app.
+3. The consent scopes are identity only: `openid`, `userinfo.email`, `userinfo.profile`. Do not add Workspace admin scopes on this client. Those are granted to the service account in the next step.
+4. You will add the redirect URI after the first deploy. Leave it blank for now, or add it as soon as `deploy.sh` prints it.
+
+Store the client id and secret:
+
+```bash
+echo -n 'YOUR_CLIENT_ID' | gcloud secrets versions add checklist-oauth-client-id --data-file=- --project=YOUR_PROJECT_ID
+echo -n 'YOUR_CLIENT_SECRET' | gcloud secrets versions add checklist-oauth-client-secret --data-file=- --project=YOUR_PROJECT_ID
+```
+
+Do not leave the bootstrap value `PLACEHOLDER` in those two secrets.
+
+## 3. Authorize domain-wide delegation
+
+In the Workspace Admin console: **Security → Access and data control → API controls → Domain-wide delegation → Add new**.
+
+- Client ID: the numeric service account client ID printed by `bootstrap.sh`
+- Scopes: the comma-separated list printed by the script (the same list is in `scripts/lib/scopes.sh`)
+
+Those scopes are:
+
+- `https://www.googleapis.com/auth/admin.directory.user.readonly` — users and 2-step status
+- `https://www.googleapis.com/auth/cloud-identity.policies.readonly` — most checklist settings
+- `https://www.googleapis.com/auth/chrome.management.policy.readonly` — Chrome browser policy
+- `https://www.googleapis.com/auth/drive.file` — create the export CSV in the signed-in admin’s Drive
+
+The service account can read those APIs only while it is acting as a Workspace admin who signed in. It cannot change users, Chrome policies, or existing Drive files.
+
+## 4. Deploy
 
 ```bash
 PROJECT_ID=your-gcp-project-id bash scripts/deploy.sh
 ```
 
-Add `https://<service-url>/api/auth/callback` to the OAuth client’s authorized redirect URIs, then sign in.
+The script builds the image, deploys Cloud Run service `security-checklist`, and prints the service URL. It writes `https://<service-url>/api/auth/callback` into `checklist-oauth-redirect-uri` and updates the service with that secret version and `CORS_ORIGIN`.
 
-`deploy.sh` writes that callback into `checklist-oauth-redirect-uri` and updates the service with the numeric secret version plus `CORS_ORIGIN`. Cloud Run rejects a full resource name (`projects/.../versions/N`) as a secret version. If that update fails, the script exits non-zero: the first revision may already be public, and sign-in stays on the bootstrap placeholder until you re-run `deploy.sh`.
+If that update fails, the script exits non-zero. The first revision may already be public, and sign-in stays on the placeholder redirect until you run `deploy.sh` again.
 
-Do not leave the bootstrap values `PLACEHOLDER` in the OAuth client secrets.
+## 5. Finish the OAuth client and sign in
+
+Add the printed callback URL to the OAuth Web client’s **Authorized redirect URIs**:
+
+`https://<service-url>/api/auth/callback`
+
+Open the service URL and sign in with a Workspace admin in an allowed domain. On the Security Checklist page, choose **Run checklist**. Open **2-Step Verification**, then **2FA Report**, to list who has 2-step enrolled and who has it enforced.
 
 ## After you change a secret
 
-Cloud Run pins the secret version that was current when the revision was created. Replacing `checklist-oauth-client-id` or any other checklist secret does not affect the running revision until you run `bash scripts/deploy.sh` again.
+Cloud Run pins the secret version that was current when the revision was created. A new secret version does not affect the running service until you run `bash scripts/deploy.sh` again.
 
-## Updates
+## Later deploys
 
-Re-run `bash scripts/deploy.sh` from a machine with `gcloud` and Cloud Build permissions.
+Run `bash scripts/deploy.sh` again from a machine with `gcloud` and Cloud Build permission. If you change domain-wide delegation, replace the scope list in the Admin console with the scopes `deploy.sh` prints.
 
-If domain-wide delegation was already authorized, replace that scope list in admin.google.com with the scopes `deploy.sh` prints. The previous list could change users, Chrome policies, and all of Drive. The current list is read-only, plus `drive.file` to create the checklist CSV.
-
-## Env / secrets
-
-| Name | Role |
-|------|------|
-| `CHECKLIST_BUCKET` | GCS bucket for `latest.json` + `waivers.json` (default `<project>-security-checklist`). Uniform access, public access prevention, and object versioning. |
-| `SECURITY_CHECKLIST_PREFIX` | Object prefix (default `security-checklist`) |
-| `GOOGLE_CLIENT_*` | OAuth Web client |
-| `JWT_SECRET` | Session signing |
-| `WORKSPACE_DOMAIN` / `GWS_ALLOWED_DOMAINS` | Login gate |
-| `SERVICE_ACCOUNT_EMAIL` | Runtime SA for keyless DWD |
-
-## Service names
+## Names
 
 | Resource | Value |
 |----------|--------|
 | Cloud Run | `security-checklist` |
-| Runtime SA | `security-checklist-sa` |
+| Runtime service account | `security-checklist-sa` |
 | Artifact Registry | `security-checklist-repo` |
 | Bucket | `<project>-security-checklist` |
+| Region | `us-central1` unless you set `REGION` |
+
+| Secret | Role |
+|--------|------|
+| `checklist-oauth-client-id` | OAuth Web client id |
+| `checklist-oauth-client-secret` | OAuth Web client secret |
+| `checklist-oauth-redirect-uri` | `https://<service>/api/auth/callback` |
+| `checklist-jwt-secret` | Session cookie signing |
+| `checklist-workspace-domain` | Primary Workspace domain |
+| `checklist-allowed-domains` | Domains allowed to sign in |

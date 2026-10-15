@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# First-time GCP bootstrap for Security Checklist (same project as Admin Assist is fine).
+# First-time GCP bootstrap for GWS Security.
 #
 # Creates: APIs, runtime SA, Artifact Registry, GCS bucket, Secret Manager placeholders.
 # You still must create a new OAuth Web client and authorize DWD for the new SA.
@@ -88,7 +88,7 @@ log "SA client ID:   ${SA_CLIENT_ID}"
 log "Bucket:         gs://${CHECKLIST_BUCKET}"
 log ""
 log "Next (manual, once):"
-log "  1. Create a new OAuth Web client (do not reuse Admin Assist)."
+log "  1. Create an OAuth Web client for this app (internal consent, identity scopes only)."
 log "  2. Store client id/secret in checklist-oauth-client-id / checklist-oauth-client-secret."
 log "  3. Authorize DWD for SA client ID ${SA_CLIENT_ID} with:"
 log "       ${DWD_SCOPES}"

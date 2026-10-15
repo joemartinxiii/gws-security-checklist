@@ -65,9 +65,10 @@ Automatic forwarding is **medium** and **info** when it is allowed. It is not sc
 2. Page loads the **last saved org snapshot** (does not auto-run).
 3. **Run checklist** (super admin) re-evaluates checks and writes `security-checklist/latest.json`.
 4. Segments: **Overview**, **Passing**, **Failing**, **Waived**. Failing is sorted by severity.
-5. Each check has severity, rationale, and recommendation (for client walkthroughs).
+5. Each check has severity, rationale, and recommendation.
 6. **Waive** (super admin) stores an optional reason in `security-checklist/waivers.json` (survives re-runs).
-7. **Export** CSV/PDF/Drive uses the **cached** last run + waivers (no extra Policy API hit).
+7. **Export** CSV, PDF, or Drive uses the loaded last run and waivers. It does not call the Policy API again.
+8. On **2-Step Verification**, **2FA Report** lists each user’s name, email, enrollment, and enforcement. Export that page to CSV or Drive.
 
 ---
 
@@ -92,8 +93,10 @@ Local disk under `backend/data/security-checklist/` when the bucket is unset (de
 | POST | `/api/audit/hardening/waivers/import` | Super admin | Merge browser-local waivers once |
 | GET | `/api/audit/hardening/export` | Any admin | CSV from cache |
 | POST | `/api/audit/hardening/export/drive` | Super admin | Drive upload from cache |
+| GET | `/api/audit/2sv` | Any admin | Users with name, email, enrolled, enforced |
+| POST | `/api/audit/2sv/export/drive` | Super admin | 2FA report CSV in that admin’s Drive |
 
-Paths keep the Admin Assist `/audit/hardening` prefix so the ported page stays stable.
+The checklist page builds its CSV and PDF in the browser from the loaded run. The export routes above are the same data from the server.
 
 ### Status values
 

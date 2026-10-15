@@ -1,41 +1,45 @@
 # Local development
 
-## UI-only (no secrets)
+## UI only
+
+This mode does not talk to Google. It is the way to click through the checklist and the 2FA report.
 
 ```bash
 npm install
 npm run dev:frontend:msw
 ```
 
-Vite on http://localhost:3000. MSW signs you in as a mock super admin and mocks `/api/*`, so the checklist page is fully interactive.
+Vite serves http://localhost:3000. The mock signs you in as a super admin and answers `/api/*` with sample checks and sample users.
 
 ## Full stack
 
+Use this when you want the local API to call a real Workspace tenant. Finish [DEPLOY.md](./DEPLOY.md) first, or create the same OAuth client and domain-wide delegation for a local redirect URI of `http://localhost:5001/api/auth/callback`.
+
+`backend/src/bootstrap-env.ts` loads `backend/.env` before the server reads `JWT_SECRET`. Put secrets in `backend/.env`. That file is gitignored. Do not commit it.
+
 ```bash
-# backend/src/bootstrap-env.ts loads backend/.env before auth.service.ts
-# reads JWT_SECRET. From backend/, the same file is ./.env.
 npm run dev
 ```
 
+- API: http://localhost:5001
+- App: http://localhost:3000 (Vite proxies `/api` to port 5001)
+
 `npx dotenv -e backend/.env -- npm run dev` also works. Values already in the process environment win over the file.
 
-- Backend: http://localhost:5001
-- Frontend: http://localhost:3000 (proxies `/api` → :5001)
+Live Google calls also need Application Default Credentials:
 
-`backend/.env` is gitignored. Never commit real secrets or tenant identifiers.
+```bash
+gcloud auth application-default login
+```
 
-Sign-in and live Google API calls also need:
+Without the OAuth client, domain-wide delegation, and those credentials, use the UI-only command above.
 
-- OAuth Web client (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`)
-- A Workspace tenant with domain-wide delegation for `security-checklist-sa`
-- Application Default Credentials (`gcloud auth application-default login`)
-
-Without those, use MSW mode.
-
-## Useful commands
+## Commands
 
 | Command | What it does |
 |---------|----------------|
-| `npm run type-check:all` | Backend + frontend `tsc --noEmit` |
-| `npm test` | Backend Jest (store + hardening meta) |
-| `npm run check:scopes` | DWD/OAuth strings match `scopes.sh` |
+| `npm run dev:frontend:msw` | Checklist UI with sample data |
+| `npm run dev` | API and UI together |
+| `npm run type-check:all` | Typecheck backend and frontend |
+| `npm test` | Backend tests |
+| `npm run check:scopes` | Confirm the scope list in code matches `scripts/lib/scopes.sh` |

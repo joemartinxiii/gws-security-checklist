@@ -11,7 +11,7 @@ require_cmd() {
 }
 
 # App-level auth is the gate. Do not let this SA invoke every Cloud Run
-# service in a shared project (including a sibling Admin Assist service).
+# service in the project.
 revoke_project_run_invoker() {
   local project="$1"
   local member="$2"
