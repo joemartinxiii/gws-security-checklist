@@ -35,7 +35,7 @@ export const handlers = [
       status: 'ready',
       ranAt: new Date().toISOString(),
       triggeredBy: 'admin@example.com',
-      policyApi: { available: true },
+      policyApi: hardeningData.policyApi,
       waivers: hardeningData.waivers,
     })
   ),

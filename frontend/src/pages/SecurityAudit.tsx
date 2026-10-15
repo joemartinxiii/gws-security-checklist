@@ -41,6 +41,13 @@ import { ExportMenuRow } from '../components/ExportButton';
 import { ActionTooltip } from '../components/ActionTooltip';
 import { getApiErrorMessage } from '../utils/apiError';
 import { hardeningChecksToCsv } from '../utils/checklistCsv';
+import { safeAdminConsoleUrl } from '../utils/adminUrl';
+import {
+  computeChecklistScore,
+  PLAIN_SCORE_NOTE,
+  WEIGHTED_SCORE_LABEL,
+  WEIGHTED_SCORE_NOTE,
+} from '../utils/score';
 import { ColumnHeader } from '../components/ui/ColumnHeader';
 import { ListShell, ListHeaderRow, ListDataRow } from '../components/ui/ListShell';
 import { DotLabel } from '../components/StatusDot';
@@ -56,12 +63,16 @@ const LU = 1.75;
 
 /** Same section order as backend / GWS_HARDENING.md */
 const HARDENING_CATEGORY_ORDER = [
+  'Administrator Accounts',
   'Authentication',
   'Email',
   'Advanced Phishing & Malware',
   'Calendar',
   'Google Drive',
-  'Chrome Managed Browsers',
+  'Groups',
+  'Chat',
+  'Chrome Browser',
+  'Alerts',
   'Login Challenges',
   'Data Download',
   'Apps Control',
@@ -151,6 +162,8 @@ interface PolicyApiMeta {
   available: boolean;
   code?: string;
   message?: string;
+  warnings?: string[];
+  partial?: boolean;
 }
 
 interface HardeningPayload {
@@ -166,6 +179,7 @@ interface HardeningPayload {
     fail: number;
     manual: number;
     info: number;
+    score?: number | null;
   };
   policyApi: PolicyApiMeta;
   waivers: Record<string, WaiverEntry>;
@@ -212,9 +226,7 @@ function exportSecurityAuditToPdf(
     info: activeChecks.filter((c) => c.status === 'info').length,
   };
   const waivedCount = hardeningData.checks.filter((c) => ignoredIds.has(c.id)).length;
-  const graded = stats.pass + stats.warning + stats.fail;
-  const denom = graded > 0 ? graded : 1;
-  const pctPass = Math.round((stats.pass / denom) * 100);
+  const score = computeChecklistScore(activeChecks, hardeningData.statistics, waivedCount);
 
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   const pageW = doc.internal.pageSize.getWidth();
@@ -249,11 +261,17 @@ function exportSecurityAuditToPdf(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(22);
   doc.setTextColor(26, 115, 232);
-  doc.text(`${pctPass}%`, PDF_MARGIN + 4, summaryTop + 11);
+  doc.text(`${score.value}%`, PDF_MARGIN + 4, summaryTop + 11);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
   doc.setTextColor(110, 110, 110);
-  doc.text('of graded checks pass automated verification', PDF_MARGIN + 4, summaryTop + 17);
+  doc.text(
+    score.weighted
+      ? `${WEIGHTED_SCORE_LABEL}. Warnings count half.`
+      : 'of graded checks pass automated verification',
+    PDF_MARGIN + 4,
+    summaryTop + 17
+  );
 
   const statParts = [
     `Pass ${stats.pass}`,
@@ -629,7 +647,7 @@ export function SecurityAudit() {
     setExportAnchorEl(null);
     try {
       const response = await apiClient.post('/audit/hardening/export/drive');
-      if (response.data?.webViewLink) window.open(response.data.webViewLink, '_blank');
+      if (response.data?.webViewLink) window.open(response.data.webViewLink, '_blank', 'noopener,noreferrer');
       showSnackbar('Saved to Google Drive.');
     } catch (err: unknown) {
       console.error(err);
@@ -915,6 +933,7 @@ export function SecurityAudit() {
       : detailCheckId
         ? ignoredChecks.find((c) => c.id === detailCheckId) ?? null
         : null;
+  const detailAdminUrl = safeAdminConsoleUrl(detailCheck?.adminConsoleUrl);
   const detailWaived = detailCheck ? ignoredIds.has(detailCheck.id) : false;
   const detailStatusColor = (status: HardeningCheck['status']) =>
     status === 'pass'
@@ -933,6 +952,13 @@ export function SecurityAudit() {
         'Cloud Identity Policy API unavailable — policy-backed checks need manual review until access is restored.'
       : null;
 
+  const policyWarnings = [
+    ...(hardeningData?.policyApi?.partial && !hardeningData.policyApi.warnings?.length
+      ? ['Some policy data could not be read. Affected checks need manual review.']
+      : []),
+    ...(hardeningData?.policyApi?.warnings ?? []),
+  ];
+
   return (
     <>
       <Box sx={{ fontFamily: T.font }}>
@@ -940,7 +966,7 @@ export function SecurityAudit() {
           title="Security Checklist"
           lede={
             hardeningData
-              ? 'Workspace security checklist for client reviews. Compliance score uses graded checks only (info, manual, and waived excluded).'
+              ? 'Workspace security checklist for client reviews. The score uses graded checks only (info, manual, and waived excluded).'
               : 'Workspace security checklist for client reviews. Run once to capture a snapshot you can export and discuss.'
           }
           status={
@@ -1029,7 +1055,12 @@ export function SecurityAudit() {
               ? (() => {
                   const s = activeStats;
                   const denom = s.pass + s.warning + s.fail;
-                  const pctPass = denom === 0 ? 0 : Math.round((s.pass / denom) * 100);
+                  const score = computeChecklistScore(
+                    activeChecks,
+                    hardeningData.statistics,
+                    hardeningData.checks.length - activeChecks.length
+                  );
+                  const pctPass = score.value;
                   const headlineColor = pctPass >= 80 ? T.success : pctPass >= 50 ? T.accent : T.warning;
                   const pctOfGraded = (n: number) => (denom === 0 ? 0 : Math.round((n / denom) * 100));
                   return (
@@ -1056,7 +1087,7 @@ export function SecurityAudit() {
                         <ScoreRing
                           value={pctPass}
                           color={headlineColor}
-                          caption="Compliance"
+                          caption={score.weighted ? WEIGHTED_SCORE_LABEL : 'Compliance'}
                           sizeVariant="lg"
                         />
                         <Box
@@ -1125,7 +1156,7 @@ export function SecurityAudit() {
                       </Box>
                       <Box>
                         <Typography sx={{ fontFamily: T.font, fontSize: '0.8125rem', color: (t) => textSecondary(t) }}>
-                          Graded checks only — info and manual excluded from the compliance score.
+                          {score.weighted ? WEIGHTED_SCORE_NOTE : PLAIN_SCORE_NOTE}
                         </Typography>
                         {ignoredCount > 0 && (
                           <Typography
@@ -1196,6 +1227,16 @@ export function SecurityAudit() {
         {policyBanner && !running && (
           <Alert severity="warning" sx={{ mb: 2 }}>
             {policyBanner}
+          </Alert>
+        )}
+
+        {policyWarnings.length > 0 && !running && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            <Box component="ul" sx={{ m: 0, pl: 2.25 }}>
+              {policyWarnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </Box>
           </Alert>
         )}
 
@@ -1861,16 +1902,16 @@ export function SecurityAudit() {
               </Box>
             </DialogContent>
             <DialogActions sx={(th) => dialogActionsSx(th)}>
-              {detailCheck.adminConsoleUrl && (
+              {detailAdminUrl && (
                 <Button
                   size="small"
                   startIcon={<ExternalLink size={15} strokeWidth={1.75} />}
-                  href={detailCheck.adminConsoleUrl}
+                  href={detailAdminUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   sx={(th) => dialogSecondaryButtonSx(th)}
                 >
-                  Open Admin guide
+                  Open in Admin console
                 </Button>
               )}
               {detailCheck.id === '2fa-enforcement' && (

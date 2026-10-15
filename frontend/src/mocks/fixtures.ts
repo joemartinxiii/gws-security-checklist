@@ -6,6 +6,7 @@ import {
   demoHardeningChecks,
   type DemoHardeningCheck,
 } from './demoHardeningChecks';
+import { weightedScore } from '../utils/score';
 
 
 // ---------------------------------------------------------------------------
@@ -310,6 +311,7 @@ function demoHardeningStatistics(checks: DemoHardeningCheck[]) {
     fail: checks.filter((c) => c.status === 'fail').length,
     manual: checks.filter((c) => c.status === 'manual').length,
     info: checks.filter((c) => c.status === 'info').length,
+    score: weightedScore(checks),
   };
 }
 
@@ -329,7 +331,11 @@ export const hardeningData = {
   durationMs: 4200,
   checks: demoHardeningChecks,
   statistics: demoHardeningStatistics(demoHardeningChecks),
-  policyApi: { available: true },
+  policyApi: {
+    available: true,
+    partial: true,
+    warnings: ['Chrome policies could not be read for one organizational unit. Affected checks show as manual.'],
+  },
   get waivers() {
     return demoHardeningWaivers;
   },

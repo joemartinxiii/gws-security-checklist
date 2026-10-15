@@ -17,7 +17,8 @@ import { ActionTooltip } from '../components/ActionTooltip';
 import { ExportMenuRow } from '../components/ExportButton';
 import { DotLabel } from '../components/StatusDot';
 import { ColumnHeader } from '../components/ui/ColumnHeader';
-import { ListDataRow, ListHeaderRow, ListShell, listGrowSx } from '../components/ui/ListShell';
+import { ListDataRow, ListHeaderRow, ListShell } from '../components/ui/ListShell';
+import { listGrowSx } from '../components/ui/listShellStyles';
 import { PageHeader } from '../components/ui/PageHeader';
 import { ScoreRing } from '../components/ui/ScoreRing';
 import {
@@ -94,7 +95,7 @@ export function TwoSvReport() {
     void loadReport();
   }, []);
 
-  const users = report?.users ?? [];
+  const users = useMemo(() => report?.users ?? [], [report]);
 
   const sortedUsers = useMemo(() => {
     const dir = sort.direction === 'asc' ? 1 : -1;
@@ -144,7 +145,7 @@ export function TwoSvReport() {
     setExportAnchorEl(null);
     try {
       const response = await apiClient.post('/audit/2sv/export/drive');
-      if (response.data?.webViewLink) window.open(response.data.webViewLink, '_blank');
+      if (response.data?.webViewLink) window.open(response.data.webViewLink, '_blank', 'noopener,noreferrer');
       showSnackbar('Saved to Google Drive.');
     } catch (error: unknown) {
       showSnackbar(getApiErrorMessage(error, 'Drive export failed.'), 'error');
