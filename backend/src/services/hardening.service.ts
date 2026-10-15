@@ -1,6 +1,6 @@
 import { WorkspaceService } from './workspace.service';
-import { dnsCheckService } from './dns-check.service';
-import { chromePolicyService } from './chrome-policy.service';
+import { dnsCheckService, domainsToCheck, type DNSRecord } from './dns-check.service';
+import { chromePolicyService, ChromePolicyApiError } from './chrome-policy.service';
 import {
   policyService,
   PolicySnapshot,
@@ -2277,21 +2277,21 @@ export class HardeningService extends WorkspaceService {
     };
   }
 
-  private dnsCheckToHardening(record: {
-    type: string;
-    exists: boolean;
-    valid: boolean;
-    recommendation?: string;
-    issues?: string[];
-    record?: string;
-  }): HardeningCheck {
-    const severity: Severity = 'critical';
+  private dnsCheckToHardening(record: DNSRecord, primaryDomain: string, multiDomain: boolean): HardeningCheck {
+    const severity: Severity = record.type === 'MX' ? 'high' : 'critical';
     const rationaleByType: Record<string, string> = {
       SPF: 'SPF tells receiving servers which hosts may send mail for your domain. Without it (or with a soft fail), spoofed mail from your domain is far easier.',
       DKIM:
         'DKIM cryptographically signs outbound mail so receivers can detect tampering and trust your domain’s messages.',
       DMARC:
         'DMARC ties SPF/DKIM together and tells receivers what to do with failures. Without enforcement, spoofed CEO/finance mail remains easy.',
+      MX: 'MX records decide where inbound mail goes. If they do not point to Google, the Gmail filtering and DLP controls in this checklist never see the mail.',
+    };
+    const recommendedByType: Record<string, string> = {
+      SPF: 'One record ending in -all',
+      DKIM: '2048-bit key published',
+      DMARC: 'p=quarantine or p=reject',
+      MX: 'Google MX at top priority',
     };
     const recByType: Record<string, string> = {
       SPF: 'Publish a single SPF record covering all legitimate senders and end with -all (hard fail). Avoid +all or overly broad includes.',
@@ -2299,12 +2299,8 @@ export class HardeningService extends WorkspaceService {
         'Enable Google DKIM in Admin console and publish the TXT record. Prefer 2048-bit keys when the DNS provider allows it.',
       DMARC:
         'Start with p=none + reporting if needed, then move to p=quarantine or p=reject once legitimate mail paths are clean. BEC-prone orgs should not stay on p=none long-term.',
+      MX: 'Point the domain’s MX records at Google (smtp.google.com at priority 1).',
     };
-
-    let status: HardeningCheck['status'];
-    if (!record.exists) status = 'fail';
-    else if (!record.valid) status = 'warning';
-    else status = 'pass';
 
     // Soft issues from DNS lookup failures shouldn't look like raw stack traces
     const issues = (record.issues || []).map((i) =>
@@ -2312,21 +2308,22 @@ export class HardeningService extends WorkspaceService {
         ? `DNS lookup could not complete for ${record.type}. Confirm public DNS resolution from this environment.`
         : i
     );
+    if (record.record && record.status !== 'pass') issues.push(`Record: ${record.record}`);
 
+    const kind = record.type.toLowerCase();
+    const slug = record.domain.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const label = `${record.type} Record`;
     return {
-      id: `dns-${record.type.toLowerCase()}`,
+      id: record.domain === primaryDomain ? `dns-${kind}` : `dns-${kind}-${slug}`,
       category: 'Email',
-      name: `${record.type} Record`,
-      description: `${record.type} email authentication record`,
-      status,
+      name: multiDomain ? `${label} (${record.domain})` : label,
+      description:
+        record.type === 'MX' ? 'Inbound mail routing to Google' : `${record.type} email authentication record`,
+      status: record.status,
       source: 'auto',
       severity,
-      currentValue: record.exists
-        ? record.valid
-          ? 'Configured'
-          : 'Configured with issues'
-        : 'Not found',
-      recommendedValue: 'Configured and enforcing',
+      currentValue: record.currentValue,
+      recommendedValue: recommendedByType[record.type],
       rationale: rationaleByType[record.type] || `${record.type} email authentication`,
       recommendation: record.recommendation || recByType[record.type] || '',
       issues: issues.length ? issues : undefined,
@@ -2379,19 +2376,21 @@ export class HardeningService extends WorkspaceService {
     checks.push(twoSvEnforcement);
     checks.push(...this.authenticationChecks(snapshot));
 
-    // Email — DNS (SPF/DKIM/DMARC)
-    if (domain && domain.includes('.')) {
+    // Email: DNS (SPF/DKIM/DMARC/MX)
+    const dnsDomains = domainsToCheck(domain);
+    if (dnsDomains.length > 0) {
       try {
-        const dnsRecords = await dnsCheckService.checkAllDNS(domain);
-        dnsRecords.forEach((record) => {
-          checks.push(this.dnsCheckToHardening(record));
+        const primaryDomain = dnsDomains[0];
+        const perDomain = await Promise.all(dnsDomains.map((d) => dnsCheckService.checkAllDNS(d)));
+        perDomain.flat().forEach((record) => {
+          checks.push(this.dnsCheckToHardening(record, primaryDomain, dnsDomains.length > 1));
         });
       } catch (error: unknown) {
         checks.push({
           id: 'dns-check-error',
           category: 'Email',
           name: 'DNS Checks',
-          description: 'DNS record validation for SPF, DKIM, and DMARC',
+          description: 'DNS record validation for SPF, DKIM, DMARC, and MX',
           status: 'warning',
           source: 'auto',
           severity: 'critical',
@@ -2424,44 +2423,32 @@ export class HardeningService extends WorkspaceService {
 
     // Chrome managed browsers
     try {
-      const chromeChecks = await chromePolicyService.getAllPolicyChecks(userEmail);
+      const chromeChecks = await chromePolicyService.getAllPolicyChecks(userEmail, snapshot.rootOrgUnitId);
       chromeChecks.forEach((chromeCheck) => {
-        const isUpdates = chromeCheck.policyName === 'BrowserUpdateEnabled';
         checks.push({
-          id: `chrome-${chromeCheck.policyName.toLowerCase()}`,
-          category: chromeCheck.category,
-          name: chromeCheck.displayName,
-          description: chromeCheck.displayName,
-          status: chromeCheck.status,
-          source: 'auto',
-          severity: isUpdates ? 'high' : 'medium',
-          currentValue: chromeCheck.currentValue,
-          recommendedValue: chromeCheck.recommendedValue,
-          rationale: isUpdates
-            ? 'Outdated browsers are a primary malware entry point. Enforcing Chrome updates keeps the managed fleet patched.'
-            : 'Forced extensions let IT ship password managers, blockers, or security tools consistently instead of relying on user choice.',
-          recommendation: isUpdates
-            ? 'Ensure browser updates are enabled for managed Chrome. Investigate unknown status if Chrome Policy API access is missing.'
-            : 'Deploy a small allowlist of security-relevant extensions (e.g. password manager). Unknown status usually means Chrome Policy API is not enabled or authorized.',
-          issues: chromeCheck.issues,
+          ...chromeCheck,
+          description: chromeCheck.name,
+          source: chromeCheck.status === 'manual' ? 'manual' : 'auto',
         });
       });
     } catch (error: unknown) {
       checks.push({
         id: 'chrome-policy-api',
-        category: 'Chrome Managed Browsers',
+        category: 'Chrome Browser',
         name: 'Chrome Policy API',
-        description: 'Ability to read managed Chrome browser policies',
+        description: 'Ability to read Chrome browser policies',
         status: 'warning',
         source: 'auto',
         severity: 'medium',
         currentValue: 'Unavailable',
         recommendedValue: 'API enabled for audits',
         rationale:
-          'Without Chrome Policy API access we cannot confirm browser update and extension posture automatically.',
+          'Without Chrome Policy API access the audit cannot confirm Safe Browsing, download, and update settings for Chrome.',
         recommendation:
           'Enable chromepolicy.googleapis.com and grant the chrome.management.policy.readonly DWD scope, then re-run the audit.',
-        issues: [humanizeApiFailure(error, 'Chrome Policy API')],
+        issues: [
+          error instanceof ChromePolicyApiError ? error.message : humanizeApiFailure(error, 'Chrome Policy API'),
+        ],
       });
     }
 
