@@ -8,6 +8,10 @@ Open **2-Step Verification** and choose **2FA Report** for a user list: name, em
 
 This is not Google Security Health, and it is not the personal Security Checkup. The check list follows Google’s published [Security checklists](https://knowledge.workspace.google.com/admin/security/security-checklists).
 
+GWS Security is not made by or endorsed by Google. Google Workspace is a trademark of Google.
+
+A passing score is a baseline review. It is not a certification that the tenant is secure.
+
 ## How it runs
 
 One Cloud Run service serves the React app and the API. When nobody is using it, the service scales to zero.

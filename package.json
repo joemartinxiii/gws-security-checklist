@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Google Workspace Security Checklist — standalone hardening baseline",
   "private": true,
+  "license": "MIT",
   "workspaces": [
     "frontend",
     "backend"
