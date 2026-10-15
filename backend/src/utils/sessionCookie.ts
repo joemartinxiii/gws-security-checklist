@@ -6,6 +6,9 @@ export const SESSION_COOKIE_NAME = 'sessionToken';
 /** Short-lived cookie holding OAuth `state` for CSRF protection on the callback. */
 export const OAUTH_STATE_COOKIE_NAME = 'oauth_state';
 
+/** Short-lived cookie holding the PKCE code_verifier for the same login attempt. */
+export const OAUTH_VERIFIER_COOKIE_NAME = 'oauth_verifier';
+
 /**
  * Parse durations into milliseconds.
  * Supports plain seconds, or values like 24h / 8h / 15m / 3600s.

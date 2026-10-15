@@ -1,14 +1,15 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
-import { getAuthUrl } from '../config/google.config';
+import { createPkcePair, getAuthUrl } from '../config/google.config';
 import { authService } from '../services/auth.service';
 import { authenticateSession, AuthRequest } from '../middleware/auth.middleware';
 import { permissionsService } from '../services/permissions.service';
-import { isEmailInAllowedDomain, getAllowedDomains } from '../utils/validation';
+import { isEmailInAllowedDomain, getAllowedDomains, emailsEqual, getAuditReaders } from '../utils/validation';
 import { sendApiError } from '../utils/apiError';
 import {
   SESSION_COOKIE_NAME,
   OAUTH_STATE_COOKIE_NAME,
+  OAUTH_VERIFIER_COOKIE_NAME,
   sessionCookieOptions,
   clearCookieOptions,
   oauthStateCookieOptions,
@@ -23,13 +24,17 @@ function frontendBase(): string {
 
 /**
  * GET /api/auth/login
- * Start Google OAuth (identity only). Sets a short-lived oauth_state cookie for CSRF.
+ * Start Google OAuth (identity only). Sets short-lived oauth_state and
+ * oauth_verifier cookies: state guards the callback against CSRF, and the
+ * PKCE verifier binds the code exchange to this browser.
  */
-router.get('/login', (_req: Request, res: Response) => {
+router.get('/login', async (_req: Request, res: Response) => {
   try {
     const state = crypto.randomBytes(24).toString('hex');
+    const { codeVerifier, codeChallenge } = await createPkcePair();
     res.cookie(OAUTH_STATE_COOKIE_NAME, state, oauthStateCookieOptions());
-    const authUrl = getAuthUrl(state);
+    res.cookie(OAUTH_VERIFIER_COOKIE_NAME, codeVerifier, oauthStateCookieOptions());
+    const authUrl = getAuthUrl(state, codeChallenge);
     res.json({ authUrl });
   } catch (error) {
     console.error('Error generating auth URL:', error);
@@ -39,7 +44,8 @@ router.get('/login', (_req: Request, res: Response) => {
 
 /**
  * GET /api/auth/callback
- * OAuth2 callback: exchange code, gate domain + admin, set HttpOnly session cookie.
+ * OAuth2 callback: exchange code (with the PKCE verifier), verify the ID token,
+ * gate domain + admin, set HttpOnly session cookie.
  * Google tokens are used only for this request and never sent to the browser.
  */
 router.get('/callback', async (req: Request, res: Response) => {
@@ -52,9 +58,17 @@ router.get('/callback', async (req: Request, res: Response) => {
     }
 
     const expectedState = req.cookies?.[OAUTH_STATE_COOKIE_NAME];
+    const codeVerifier = req.cookies?.[OAUTH_VERIFIER_COOKIE_NAME];
     res.clearCookie(OAUTH_STATE_COOKIE_NAME, clearCookieOptions());
-    if (!state || !expectedState || String(state) !== String(expectedState)) {
-      console.warn('OAuth callback rejected: missing or mismatched state');
+    res.clearCookie(OAUTH_VERIFIER_COOKIE_NAME, clearCookieOptions());
+    if (
+      !state ||
+      !expectedState ||
+      String(state) !== String(expectedState) ||
+      typeof codeVerifier !== 'string' ||
+      !codeVerifier
+    ) {
+      console.warn('OAuth callback rejected: missing or mismatched state or PKCE verifier');
       return res.redirect(`${base}/auth/error?error=invalid_state`);
     }
 
@@ -63,23 +77,36 @@ router.get('/callback', async (req: Request, res: Response) => {
     }
 
     // Exchange code for tokens (server-side only; discarded after identity check)
-    const tokens = await authService.exchangeCodeForTokens(code);
-    const userInfo = await authService.getUserInfo(tokens.accessToken);
+    const tokens = await authService.exchangeCodeForTokens(code, codeVerifier);
+    if (!tokens.idToken) {
+      console.warn('OAuth callback rejected: token response had no ID token');
+      return res.redirect(`${base}/auth/error?error=callback_failed`);
+    }
+    const identity = await authService.verifyIdToken(tokens.idToken);
 
     // --- Login gate -------------------------------------------------------
-    // Only allow accounts in a permitted Workspace domain that are actually
-    // Workspace admins. Previously any Google account could obtain a session
-    // and the admin check happened lazily on later API calls.
-    if (!isEmailInAllowedDomain(userInfo.email)) {
-      console.warn(`Denied login for out-of-domain account: ${userInfo.email}`);
+    // Only allow verified accounts whose hosted domain (hd) is a permitted
+    // Workspace domain and that are actually Workspace admins. The hd claim is
+    // required: an email suffix alone does not prove Workspace membership.
+    const hd = String(identity.hd || '').toLowerCase();
+    if (!identity.emailVerified) {
+      console.warn(`Denied login for unverified email: ${identity.email}`);
+      return res.redirect(`${base}/auth/error?error=domain_not_allowed`);
+    }
+    if (!hd || !getAllowedDomains().includes(hd) || !isEmailInAllowedDomain(identity.email)) {
+      console.warn(`Denied login for out-of-domain account: ${identity.email}`);
       return res.redirect(`${base}/auth/error?error=domain_not_allowed`);
     }
 
     try {
-      const adminRole = await permissionsService.getAdminRoles(userInfo.email);
+      const adminRole = await permissionsService.getAdminRoles(identity.email, { fresh: true });
       if (!adminRole.isSuperAdmin && !adminRole.isDelegatedAdmin) {
-        console.warn(`Denied login for non-admin account: ${userInfo.email}`);
+        console.warn(`Denied login for non-admin account: ${identity.email}`);
         return res.redirect(`${base}/auth/error?error=not_admin`);
+      }
+      if (!adminRole.id || !adminRole.primaryEmail || !emailsEqual(adminRole.primaryEmail, identity.email)) {
+        console.warn(`Denied login: Directory user does not match token email for ${identity.email}`);
+        return res.redirect(`${base}/auth/error?error=admin_check_failed`);
       }
     } catch (adminErr) {
       console.error('Login gate admin check failed:', adminErr);
@@ -87,7 +114,12 @@ router.get('/callback', async (req: Request, res: Response) => {
     }
     // ---------------------------------------------------------------------
 
-    const sessionToken = await authService.createSessionToken(userInfo);
+    const sessionToken = await authService.createSessionToken({
+      email: identity.email,
+      name: identity.name || identity.email,
+      picture: identity.picture,
+      sub: identity.sub,
+    });
     res.cookie(SESSION_COOKIE_NAME, sessionToken, sessionCookieOptions());
 
     // Clean redirect — no tokens in query or fragment
@@ -100,7 +132,7 @@ router.get('/callback', async (req: Request, res: Response) => {
 
 /**
  * GET /api/auth/me
- * Current user from session cookie (or optional Bearer for automation).
+ * Current user from session cookie (or Bearer for automation outside production).
  */
 router.get('/me', authenticateSession, async (req: AuthRequest, res: Response) => {
   try {
@@ -132,6 +164,7 @@ router.post('/logout', async (req: Request, res: Response) => {
   }
   res.clearCookie(SESSION_COOKIE_NAME, clearCookieOptions());
   res.clearCookie(OAUTH_STATE_COOKIE_NAME, clearCookieOptions());
+  res.clearCookie(OAUTH_VERIFIER_COOKIE_NAME, clearCookieOptions());
   res.json({ message: 'Logged out successfully' });
 });
 
@@ -144,10 +177,14 @@ router.get('/permissions', authenticateSession, async (req: AuthRequest, res: Re
     const permissions = await permissionsService.getUserPermissions(req.user!.email);
     const adminRole = await permissionsService.getAdminRoles(req.user!.email);
 
+    const isListedReader =
+      adminRole.isDelegatedAdmin && getAuditReaders().has(req.user!.email.trim().toLowerCase());
+
     res.json({
       permissions,
       isSuperAdmin: adminRole.isSuperAdmin,
       isDelegatedAdmin: adminRole.isDelegatedAdmin,
+      canReadStoredAudit: adminRole.isSuperAdmin || isListedReader,
     });
   } catch (error: any) {
     sendApiError(res, error, 'Failed to get permissions', 'auth.permissions');
