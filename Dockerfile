@@ -1,5 +1,5 @@
 # Pinned by digest. Dependabot (docker) proposes updates.
-FROM node:24-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 AS builder
+FROM node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc AS builder
 
 WORKDIR /app
 
@@ -19,7 +19,7 @@ COPY . .
 ENV VITE_USE_MSW=false
 RUN npm run build
 
-FROM node:24-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
+FROM node:26-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
 
 WORKDIR /app
 
